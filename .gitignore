@@ -1,0 +1,29 @@
+# Environment
+.env
+.env.local
+*.local
+
+# Go build output
+/bin/
+**/bin/
+*.exe
+*.exe~
+*.test
+*.out
+vendor/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Docker volumes (ถ้า bind mount ในเครื่อง)
+**/pgdata/
