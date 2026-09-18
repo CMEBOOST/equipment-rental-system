@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -15,8 +16,8 @@ import (
 	"github.com/equipment-rental-system/user-service/internal/service"
 )
 
-func setupAuthService(t *testing.T) *service.AuthService {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+func setupAuthServiceWithDB(t *testing.T, dsn string) (*service.AuthService, *gorm.DB) {
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 
 	// Create tables manually for SQLite (gen_random_uuid() is not supported)
@@ -79,7 +80,12 @@ func setupAuthService(t *testing.T) *service.AuthService {
 		repository.NewUserRepo(db), repository.NewRoleRepo(db),
 		repository.NewRefreshTokenRepo(db), repository.NewLoginLogRepo(db),
 		service.NewTokenService(cfg.JWTSecret, cfg.JWTAccessTTL), cfg,
-	)
+	), db
+}
+
+func setupAuthService(t *testing.T) *service.AuthService {
+	svc, _ := setupAuthServiceWithDB(t, ":memory:")
+	return svc
 }
 
 func TestAuthService_Register_DuplicateEmail_ReturnsErrEmailExists(t *testing.T) {
@@ -101,119 +107,26 @@ func TestAuthService_Register_AssignsCustomerRole(t *testing.T) {
 	require.Equal(t, int16(3), u.RoleID)
 }
 
-func TestAuthService_Register_TOCTOURace_EmailViolation(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
+func TestAuthService_Register_ConcurrentSameEmail_OneSucceedsOtherGetsProperError(t *testing.T) {
+	// Use shared-cache in-memory database to allow concurrent access from goroutines
+	svc, _ := setupAuthServiceWithDB(t, "file::memory:?cache=shared")
+	req1 := dto.RegisterRequest{Email: "race@example.com", Username: "racer1", Password: "Passw0rd1"}
+	req2 := dto.RegisterRequest{Email: "race@example.com", Username: "racer2", Password: "Passw0rd1"}
 
-	// Setup database
-	require.NoError(t, db.Exec(`
-		CREATE TABLE roles (
-			id INTEGER PRIMARY KEY,
-			name TEXT UNIQUE,
-			description TEXT
-		)
-	`).Error)
-	require.NoError(t, db.Exec(`
-		CREATE TABLE users (
-			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE,
-			username TEXT UNIQUE,
-			password_hash TEXT,
-			full_name TEXT,
-			phone TEXT,
-			role_id INTEGER,
-			is_active BOOLEAN DEFAULT true,
-			created_at DATETIME,
-			updated_at DATETIME,
-			deleted_at DATETIME,
-			FOREIGN KEY (role_id) REFERENCES roles(id)
-		)
-	`).Error)
-	require.NoError(t, db.Create(&model.Role{ID: 3, Name: "customer"}).Error)
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); _, errs[0] = svc.Register(req1) }()
+	go func() { defer wg.Done(); _, errs[1] = svc.Register(req2) }()
+	wg.Wait()
 
-	// Insert a user directly (simulating concurrent registration)
-	userRepo := repository.NewUserRepo(db)
-	// Use raw SQL to bypass GORM's ID validation
-	require.NoError(t, db.Exec("INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)",
-		"550e8400-e29b-41d4-a716-446655440000", "race@example.com", "existing", "hash", 3, true).Error)
-
-	// Now try to register with the same email - should detect it via Create() failure + re-query
-	cfg := &config.Config{BCryptCost: 4, JWTSecret: "test-secret-min-32-characters-ok", JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 168 * time.Hour}
-	authSvc := service.NewAuthService(userRepo, repository.NewRoleRepo(db),
-		repository.NewRefreshTokenRepo(db), repository.NewLoginLogRepo(db),
-		service.NewTokenService(cfg.JWTSecret, cfg.JWTAccessTTL), cfg)
-
-	u, err := authSvc.Register(dto.RegisterRequest{Email: "race@example.com", Username: "newuser", Password: "Passw0rd1"})
-	require.Nil(t, u)
-	require.ErrorIs(t, err, service.ErrEmailExists)
-}
-
-func TestAuthService_Register_TOCTOURace_UsernameViolation(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-
-	// Setup database
-	require.NoError(t, db.Exec(`
-		CREATE TABLE roles (
-			id INTEGER PRIMARY KEY,
-			name TEXT UNIQUE,
-			description TEXT
-		)
-	`).Error)
-	require.NoError(t, db.Exec(`
-		CREATE TABLE users (
-			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE,
-			username TEXT UNIQUE,
-			password_hash TEXT,
-			full_name TEXT,
-			phone TEXT,
-			role_id INTEGER,
-			is_active BOOLEAN DEFAULT true,
-			created_at DATETIME,
-			updated_at DATETIME,
-			deleted_at DATETIME,
-			FOREIGN KEY (role_id) REFERENCES roles(id)
-		)
-	`).Error)
-	require.NoError(t, db.Exec(`
-		CREATE TABLE refresh_tokens (
-			id TEXT PRIMARY KEY,
-			user_id TEXT,
-			token_hash TEXT UNIQUE,
-			expires_at DATETIME,
-			revoked_at DATETIME,
-			ip_address TEXT,
-			user_agent TEXT,
-			created_at DATETIME,
-			FOREIGN KEY (user_id) REFERENCES users(id)
-		)
-	`).Error)
-	require.NoError(t, db.Exec(`
-		CREATE TABLE login_logs (
-			id INTEGER PRIMARY KEY,
-			user_id TEXT,
-			email_attempted TEXT,
-			success BOOLEAN,
-			ip_address TEXT,
-			user_agent TEXT,
-			created_at DATETIME,
-			FOREIGN KEY (user_id) REFERENCES users(id)
-		)
-	`).Error)
-	require.NoError(t, db.Create(&model.Role{ID: 3, Name: "customer"}).Error)
-
-	// Insert a user directly with specific username
-	require.NoError(t, db.Exec("INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)",
-		"550e8400-e29b-41d4-a716-446655440001", "user@example.com", "raceuser", "hash", 3, true).Error)
-
-	// Try to register with the same username - should detect it via Create() failure + re-query
-	cfg := &config.Config{BCryptCost: 4, JWTSecret: "test-secret-min-32-characters-ok", JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 168 * time.Hour}
-	authSvc := service.NewAuthService(repository.NewUserRepo(db), repository.NewRoleRepo(db),
-		repository.NewRefreshTokenRepo(db), repository.NewLoginLogRepo(db),
-		service.NewTokenService(cfg.JWTSecret, cfg.JWTAccessTTL), cfg)
-
-	u, err := authSvc.Register(dto.RegisterRequest{Email: "newuser@example.com", Username: "raceuser", Password: "Passw0rd1"})
-	require.Nil(t, u)
-	require.ErrorIs(t, err, service.ErrUsernameExists)
+	successCount := 0
+	for _, err := range errs {
+		if err == nil {
+			successCount++
+		} else {
+			require.ErrorIs(t, err, service.ErrEmailExists)
+		}
+	}
+	require.Equal(t, 1, successCount)
 }

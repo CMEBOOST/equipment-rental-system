@@ -82,17 +82,15 @@ func (s *AuthService) Register(req dto.RegisterRequest) (*model.User, error) {
 		IsActive:     true,
 	}
 	if err := s.users.Create(u); err != nil {
-		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			// TOCTOU race: re-query to determine which unique constraint was violated
-			if _, err := s.users.FindByEmail(req.Email); err == nil {
-				return nil, ErrEmailExists
-			}
-			if _, err := s.users.FindByUsername(req.Username); err == nil {
-				return nil, ErrUsernameExists
-			}
-			// Practically impossible case: constraint violation but neither re-query found a match
-			return nil, ErrConflict
+		// TOCTOU race: when Create() fails, attempt to determine if it's due to unique constraint
+		// by re-querying for email and username. This works across all drivers (SQLite, PostgreSQL, etc.)
+		if _, checkErr := s.users.FindByEmail(req.Email); checkErr == nil {
+			return nil, ErrEmailExists
 		}
+		if _, checkErr := s.users.FindByUsername(req.Username); checkErr == nil {
+			return nil, ErrUsernameExists
+		}
+		// If re-queries found nothing, it's a different kind of error - propagate it
 		return nil, err
 	}
 	u.Role = *role
