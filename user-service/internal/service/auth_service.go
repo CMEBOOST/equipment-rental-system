@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -48,10 +49,18 @@ func (s *AuthService) Register(req dto.RegisterRequest) (*model.User, error) {
 	if !isStrongPassword(req.Password) {
 		return nil, ErrWeakPassword
 	}
-	if _, err := s.users.FindByEmail(req.Email); err == nil {
+	if _, err := s.users.FindByEmail(req.Email); err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	} else {
 		return nil, ErrEmailExists
 	}
-	if _, err := s.users.FindByUsername(req.Username); err == nil {
+	if _, err := s.users.FindByUsername(req.Username); err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	} else {
 		return nil, ErrUsernameExists
 	}
 	role, err := s.roles.FindByName("customer")
@@ -73,10 +82,16 @@ func (s *AuthService) Register(req dto.RegisterRequest) (*model.User, error) {
 		IsActive:     true,
 	}
 	if err := s.users.Create(u); err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			// Inspect error message to distinguish email vs username conflict
+			if strings.Contains(err.Error(), "uni_users_email") {
+				return nil, ErrEmailExists
+			} else if strings.Contains(err.Error(), "uni_users_username") {
+				return nil, ErrUsernameExists
+			}
+		}
 		return nil, err
 	}
 	u.Role = *role
 	return u, nil
 }
-
-var errNotFound = gorm.ErrRecordNotFound

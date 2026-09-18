@@ -18,7 +18,60 @@ import (
 func setupAuthService(t *testing.T) *service.AuthService {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.Role{}, &model.User{}, &model.RefreshToken{}, &model.LoginLog{}))
+
+	// Create tables manually for SQLite (gen_random_uuid() is not supported)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE roles (
+			id INTEGER PRIMARY KEY,
+			name TEXT UNIQUE,
+			description TEXT
+		)
+	`).Error)
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE users (
+			id TEXT PRIMARY KEY,
+			email TEXT UNIQUE,
+			username TEXT UNIQUE,
+			password_hash TEXT,
+			full_name TEXT,
+			phone TEXT,
+			role_id INTEGER,
+			is_active BOOLEAN DEFAULT true,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME,
+			FOREIGN KEY (role_id) REFERENCES roles(id)
+		)
+	`).Error)
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE refresh_tokens (
+			id TEXT PRIMARY KEY,
+			user_id TEXT,
+			token_hash TEXT UNIQUE,
+			expires_at DATETIME,
+			revoked_at DATETIME,
+			ip_address TEXT,
+			user_agent TEXT,
+			created_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id)
+		)
+	`).Error)
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE login_logs (
+			id INTEGER PRIMARY KEY,
+			user_id TEXT,
+			email_attempted TEXT,
+			success BOOLEAN,
+			ip_address TEXT,
+			user_agent TEXT,
+			created_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id)
+		)
+	`).Error)
+
 	require.NoError(t, db.Create(&model.Role{ID: 3, Name: "customer"}).Error)
 
 	cfg := &config.Config{BCryptCost: 4, JWTSecret: "test-secret-min-32-characters-ok", JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 168 * time.Hour}
