@@ -936,6 +936,27 @@ func TestAdminUserHandler_LoginLogsForUser_InvalidUUID_Returns404(t *testing.T) 
 	require.Equal(t, http.StatusNotFound, w.Code)
 }
 
+// A well-formed but nonexistent (or already-deleted) user ID must 404, not
+// silently return 200 with an empty login-log list. "No login history" and
+// "no such user" are meaningfully different answers for an admin auditing a
+// typo'd or deleted account, and every sibling /users/{id} endpoint
+// (Get/Update/Delete/ChangeRole/ChangeStatus) already 404s on an unknown ID
+// -- see TestAdminUserHandler_ChangeStatus_UnknownID_Returns404 for the
+// mirrored pattern on a sibling handler.
+func TestAdminUserHandler_LoginLogsForUser_UnknownID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+	unknownID := uuid.New()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/"+unknownID.String()+"/login-logs", nil)
+	c.Params = gin.Params{{Key: "id", Value: unknownID.String()}}
+
+	h.LoginLogsForUser(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
 // This is the critical regression test called out in the task brief: two
 // earlier endpoints (UserHandler.MyLoginLogs and AdminUserHandler.List) both
 // shipped with an unclamped limit that let ?limit=0 (or a non-numeric value,

@@ -209,7 +209,10 @@ func (h *AdminUserHandler) ChangeStatus(c *gin.Context) {
 }
 
 // LoginLogsForUser returns the paginated login-log history for an arbitrary
-// user by ID. Admin-only.
+// user by ID. Admin-only. A nonexistent user ID 404s (see the h.svc.GetProfile
+// existence check below) rather than returning 200 with an empty list, so
+// "no login history" and "no such user" stay distinguishable, consistent
+// with every sibling /users/{id} endpoint.
 //
 // page/limit are clamped here, in the handler, BEFORE calling
 // UserService.LoginLogsForUser and BEFORE computing totalPages -- mirroring
@@ -222,6 +225,15 @@ func (h *AdminUserHandler) ChangeStatus(c *gin.Context) {
 func (h *AdminUserHandler) LoginLogsForUser(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	// A well-formed but nonexistent (or deleted) user ID must 404, not
+	// silently succeed with an empty list: LoginLogRepo.ListForUser never
+	// errors for an unknown user ID, it just returns zero rows, so without
+	// this explicit existence check (mirroring Get's own h.svc.GetProfile
+	// call) "no login history" and "no such user" would be indistinguishable.
+	if _, err := h.svc.GetProfile(id); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
 		return
 	}
