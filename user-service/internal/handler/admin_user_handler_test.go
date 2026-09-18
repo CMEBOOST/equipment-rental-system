@@ -884,3 +884,159 @@ func TestAdminUserHandler_ChangeStatus_UnknownID_Returns404(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, w.Code)
 }
+
+func TestAdminUserHandler_LoginLogsForUser_ReturnsThatUsersLogsWithPagination(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "loglookup@example.com", "loglookupuser", "hash", 3, true,
+	).Error)
+	otherUserID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		otherUserID.String(), "other@example.com", "otherlogsuser", "hash", 3, true,
+	).Error)
+
+	logRepo := repository.NewLoginLogRepo(db)
+	require.NoError(t, logRepo.Create(&model.LoginLog{UserID: &userID, EmailAttempted: "loglookup@example.com", Success: true, IPAddress: "127.0.0.1"}))
+	require.NoError(t, logRepo.Create(&model.LoginLog{UserID: &userID, EmailAttempted: "loglookup@example.com", Success: false, IPAddress: "127.0.0.1"}))
+	// A log belonging to a different user must not leak into the target's results.
+	require.NoError(t, logRepo.Create(&model.LoginLog{UserID: &otherUserID, EmailAttempted: "other@example.com", Success: true, IPAddress: "10.0.0.1"}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/"+userID.String()+"/login-logs", nil)
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	h.LoginLogsForUser(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool             `json:"success"`
+		Data    []map[string]any `json:"data"`
+		Meta    map[string]any   `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Len(t, resp.Data, 2, "only the target user's own login logs must be returned")
+	require.Equal(t, float64(2), resp.Meta["total"])
+}
+
+func TestAdminUserHandler_LoginLogsForUser_InvalidUUID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/not-a-uuid/login-logs", nil)
+	c.Params = gin.Params{{Key: "id", Value: "not-a-uuid"}}
+
+	h.LoginLogsForUser(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// This is the critical regression test called out in the task brief: two
+// earlier endpoints (UserHandler.MyLoginLogs and AdminUserHandler.List) both
+// shipped with an unclamped limit that let ?limit=0 (or a non-numeric value,
+// which strconv.Atoi silently turns into 0) reach
+// totalPages := (total + int64(limit) - 1) / int64(limit) and divide by
+// zero. LoginLogsForUser has the exact same shape, so it must clamp
+// page/limit itself, before calling the service and before computing
+// totalPages, exactly like those two fixes.
+func TestAdminUserHandler_LoginLogsForUser_LimitZero_DoesNotPanicAndDefaults(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "limitzero@example.com", "limitzerouser", "hash", 3, true,
+	).Error)
+	require.NoError(t, repository.NewLoginLogRepo(db).Create(&model.LoginLog{UserID: &userID, EmailAttempted: "limitzero@example.com", Success: true, IPAddress: "127.0.0.1"}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/"+userID.String()+"/login-logs?limit=0", nil)
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	require.NotPanics(t, func() { h.LoginLogsForUser(c) })
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool           `json:"success"`
+		Meta    map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Equal(t, float64(20), resp.Meta["limit"], "limit=0 must clamp to the default of 20, matching the value actually used for the query, and must not divide by zero when computing total_pages")
+}
+
+func TestAdminUserHandler_LoginLogsForUser_LimitNonNumeric_DoesNotPanicAndDefaults(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "limitnan@example.com", "limitnanuser", "hash", 3, true,
+	).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/"+userID.String()+"/login-logs?limit=abc", nil)
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	require.NotPanics(t, func() { h.LoginLogsForUser(c) })
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool           `json:"success"`
+		Meta    map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Equal(t, float64(20), resp.Meta["limit"], "a non-numeric limit leaves strconv.Atoi's zero value, which must be clamped like limit=0")
+}
+
+func TestAdminUserHandler_LoginLogsForUser_LimitOutOfRange_ClampsToDefault(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "limitbig@example.com", "limitbiguser", "hash", 3, true,
+	).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/"+userID.String()+"/login-logs?limit=500", nil)
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	h.LoginLogsForUser(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Meta map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, float64(20), resp.Meta["limit"], "limit=500 is out of [1,100] and must clamp to 20")
+}
+
+func TestAdminUserHandler_LoginLogsForUser_PageZero_ClampsToOne(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "pagezero@example.com", "pagezerouser", "hash", 3, true,
+	).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/"+userID.String()+"/login-logs?page=0", nil)
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	h.LoginLogsForUser(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Meta map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, float64(1), resp.Meta["page"])
+}

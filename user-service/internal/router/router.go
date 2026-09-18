@@ -28,6 +28,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	userSvc := service.NewUserService(userRepo, refreshRepo, cfg, logRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 	adminUserHandler := handler.NewAdminUserHandler(userSvc, roleRepo, cfg.BCryptCost)
+	roleHandler := handler.NewRoleHandler(roleRepo)
 
 	v1 := r.Group("/api/v1")
 	v1.POST("/auth/register", authHandler.Register)
@@ -46,5 +47,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1.DELETE("/users/:id", authMW, middleware.RequireRole("admin"), adminUserHandler.Delete)
 	v1.PATCH("/users/:id/role", authMW, middleware.RequireRole("admin"), adminUserHandler.ChangeRole)
 	v1.PATCH("/users/:id/status", authMW, middleware.RequireRole("admin"), adminUserHandler.ChangeStatus)
+	v1.GET("/users/:id/login-logs", authMW, middleware.RequireRole("admin"), adminUserHandler.LoginLogsForUser)
+	v1.GET("/roles", authMW, middleware.RequireRole("admin", "staff"), roleHandler.List)
 	return r
 }

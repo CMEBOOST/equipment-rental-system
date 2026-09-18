@@ -207,3 +207,41 @@ func (h *AdminUserHandler) ChangeStatus(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"id": u.ID, "is_active": u.IsActive, "updated_at": u.UpdatedAt}})
 }
+
+// LoginLogsForUser returns the paginated login-log history for an arbitrary
+// user by ID. Admin-only.
+//
+// page/limit are clamped here, in the handler, BEFORE calling
+// UserService.LoginLogsForUser and BEFORE computing totalPages -- mirroring
+// LoginLogRepo.ListForUser's own clamping, UserHandler.MyLoginLogs's guard
+// (Task 11/e97be4a), and AdminUserHandler.List's identical guard
+// (Task 13/4baa211). Without this, ?limit=0 (or a non-numeric value, which
+// strconv.Atoi silently turns into 0) reaches
+// totalPages := (total + int64(limit) - 1) / int64(limit) and divides by
+// zero -- the same bug class that shipped twice already in this codebase.
+func (h *AdminUserHandler) LoginLogsForUser(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	logs, total, err := h.svc.LoginLogsForUser(id, page, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	items := make([]gin.H, 0, len(logs))
+	for _, l := range logs {
+		items = append(items, gin.H{"id": l.ID, "email_attempted": l.EmailAttempted, "success": l.Success, "ip_address": l.IPAddress, "user_agent": l.UserAgent, "created_at": l.CreatedAt})
+	}
+	totalPages := (total + int64(limit) - 1) / int64(limit)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": items, "meta": gin.H{"page": page, "limit": limit, "total": total, "total_pages": totalPages}})
+}
