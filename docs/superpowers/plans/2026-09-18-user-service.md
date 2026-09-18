@@ -2202,12 +2202,13 @@ func (s *UserService) ActiveSessions(userID uuid.UUID) ([]model.RefreshToken, er
 }
 ```
 
-Add `loginLogs *repository.LoginLogRepo` field to `UserService` struct and constructor (third parameter). This changes the constructor arity again (Task 9 introduced 1 arg, Task 10 changed it to 2), so update **every** existing call site to pass a third `*repository.LoginLogRepo` argument:
-- `router.go`: `service.NewUserService(userRepo, refreshRepo, logRepo)`
-- Task 9's `setupUserService` test helper in `user_service_test.go` (build a `LoginLogRepo` on the same in-memory db — it already has `model.LoginLog` migrated)
-- Task 10's `setupUserServiceWithPassword` test helper in `user_service_test.go` (same — it already migrates `model.LoginLog`)
+Add `loginLogs *repository.LoginLogRepo` field to `UserService` struct and constructor.
 
-Run `go build ./...` after this task's changes and confirm no call site still uses the old 1-arg or 2-arg form.
+**Note on current constructor arity (post-Task-10 fix loop):** `NewUserService` is currently `(users *repository.UserRepo, refreshTokens *repository.RefreshTokenRepo, cfg *config.Config)` — 3 args — because Task 10's review found the original 2-arg plan didn't source bcrypt cost from config, and the fix added `cfg` as the third constructor parameter (replacing the plan's original "pass cost as a method arg" approach) rather than as a fourth. Add `loginLogs` as the **fourth** parameter: `NewUserService(users, refreshTokens, cfg, loginLogs)`. Update **every** existing call site to pass this fourth `*repository.LoginLogRepo` argument:
+- `router.go`: `service.NewUserService(userRepo, refreshRepo, cfg, logRepo)`
+- Every test helper in `user_service_test.go` and `user_handler_test.go` that currently calls `service.NewUserService(...)` with 3 args (search for all call sites — there are several across both test files by this point) — each needs a `*repository.LoginLogRepo` built on the same in-memory db appended as the fourth argument (the test DB already has `model.LoginLog` migrated in every existing helper).
+
+Run `go build ./...` after this task's changes and confirm no call site still uses a stale (1, 2, or 3-arg) form.
 
 ```go
 // user-service/internal/router/router.go — add
