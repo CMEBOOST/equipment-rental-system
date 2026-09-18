@@ -2,6 +2,7 @@ package service
 
 import (
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/equipment-rental-system/user-service/internal/dto"
 	"github.com/equipment-rental-system/user-service/internal/model"
@@ -9,11 +10,12 @@ import (
 )
 
 type UserService struct {
-	users *repository.UserRepo
+	users         *repository.UserRepo
+	refreshTokens *repository.RefreshTokenRepo
 }
 
-func NewUserService(users *repository.UserRepo) *UserService {
-	return &UserService{users: users}
+func NewUserService(users *repository.UserRepo, refreshTokens *repository.RefreshTokenRepo) *UserService {
+	return &UserService{users: users, refreshTokens: refreshTokens}
 }
 
 func (s *UserService) GetProfile(userID uuid.UUID) (*model.User, error) {
@@ -35,4 +37,23 @@ func (s *UserService) UpdateProfile(userID uuid.UUID, req dto.UpdateProfileReque
 		return nil, err
 	}
 	return u, nil
+}
+
+func (s *UserService) ChangePassword(userID uuid.UUID, req dto.ChangePasswordRequest, cost int) error {
+	u, err := s.users.FindByID(userID)
+	if err != nil {
+		return err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.CurrentPassword)) != nil {
+		return ErrInvalidCredentials
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), cost)
+	if err != nil {
+		return err
+	}
+	u.PasswordHash = string(hash)
+	if err := s.users.Update(u); err != nil {
+		return err
+	}
+	return s.refreshTokens.RevokeAllForUser(userID)
 }

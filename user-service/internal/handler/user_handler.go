@@ -65,3 +65,25 @@ func (h *UserHandler) UpdateMe(c *gin.Context) {
 		"id": u.ID, "full_name": u.FullName, "phone": u.Phone, "updated_at": u.UpdatedAt,
 	}})
 }
+
+func (h *UserHandler) ChangePassword(c *gin.Context) {
+	id, ok := currentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": gin.H{"code": "UNAUTHENTICATED", "message": "unauthenticated", "details": nil}})
+		return
+	}
+	var req dto.ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	if err := h.svc.ChangePassword(id, req, 12); err != nil {
+		if err == service.ErrInvalidCredentials {
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": gin.H{"code": "INVALID_CREDENTIALS", "message": "รหัสผ่านเดิมไม่ถูกต้อง", "details": nil}})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"message": "เปลี่ยนรหัสผ่านเรียบร้อย กรุณาเข้าสู่ระบบใหม่"}})
+}

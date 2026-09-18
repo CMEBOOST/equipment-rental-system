@@ -50,6 +50,20 @@ func setupUserHandler(t *testing.T) (*handler.UserHandler, *model.User, *gorm.DB
 		)
 	`).Error)
 
+	require.NoError(t, db.Exec(`
+		CREATE TABLE refresh_tokens (
+			id TEXT PRIMARY KEY,
+			user_id TEXT,
+			token_hash TEXT UNIQUE,
+			expires_at DATETIME,
+			revoked_at DATETIME,
+			ip_address TEXT,
+			user_agent TEXT,
+			created_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id)
+		)
+	`).Error)
+
 	require.NoError(t, db.Create(&model.Role{ID: 3, Name: "customer"}).Error)
 
 	userID := uuid.New()
@@ -69,7 +83,7 @@ func setupUserHandler(t *testing.T) (*handler.UserHandler, *model.User, *gorm.DB
 		IsActive:     true,
 	}
 
-	userSvc := service.NewUserService(repository.NewUserRepo(db))
+	userSvc := service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db))
 	userHandler := handler.NewUserHandler(userSvc)
 	return userHandler, u, db
 }
