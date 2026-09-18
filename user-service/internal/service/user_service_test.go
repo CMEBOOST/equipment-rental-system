@@ -10,11 +10,14 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"github.com/equipment-rental-system/user-service/internal/config"
 	"github.com/equipment-rental-system/user-service/internal/dto"
 	"github.com/equipment-rental-system/user-service/internal/model"
 	"github.com/equipment-rental-system/user-service/internal/repository"
 	"github.com/equipment-rental-system/user-service/internal/service"
 )
+
+var testCfg = &config.Config{BCryptCost: 4}
 
 func setupUserService(t *testing.T) (*service.UserService, *model.User) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -77,7 +80,7 @@ func setupUserService(t *testing.T) (*service.UserService, *model.User) {
 		RoleID:       3,
 		IsActive:     true,
 	}
-	return service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db)), u
+	return service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), testCfg), u
 }
 
 func setupUserServiceWithPassword(t *testing.T, plain string) (*service.UserService, *model.User, *gorm.DB) {
@@ -130,13 +133,45 @@ func setupUserServiceWithPassword(t *testing.T, plain string) (*service.UserServ
 	u := &model.User{ID: uuid.New(), Email: "q@example.com", Username: "q", PasswordHash: string(hash), RoleID: 3}
 	require.NoError(t, db.Create(u).Error)
 
-	return service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db)), u, db
+	return service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), testCfg), u, db
 }
 
 func TestUserService_ChangePassword_WrongCurrent_ReturnsError(t *testing.T) {
 	svc, u, _ := setupUserServiceWithPassword(t, "Passw0rd1")
-	err := svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "WrongOne1", NewPassword: "N3wPassw0rd"}, 4)
+	err := svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "WrongOne1", NewPassword: "N3wPassw0rd"})
 	require.ErrorIs(t, err, service.ErrInvalidCredentials)
+}
+
+func TestUserService_ChangePassword_WeakNewPassword_AllDigits_ReturnsError(t *testing.T) {
+	svc, u, _ := setupUserServiceWithPassword(t, "Passw0rd1")
+	err := svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "Passw0rd1", NewPassword: "12345678"})
+	require.ErrorIs(t, err, service.ErrWeakPassword)
+}
+
+func TestUserService_ChangePassword_WeakNewPassword_AllLetters_ReturnsError(t *testing.T) {
+	svc, u, _ := setupUserServiceWithPassword(t, "Passw0rd1")
+	err := svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "Passw0rd1", NewPassword: "abcdefgh"})
+	require.ErrorIs(t, err, service.ErrWeakPassword)
+}
+
+func TestUserService_ChangePassword_WeakNewPassword_DoesNotChangeHashOrRevokeSessions(t *testing.T) {
+	svc, u, db := setupUserServiceWithPassword(t, "Passw0rd1")
+	refreshRepo := repository.NewRefreshTokenRepo(db)
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: u.ID, TokenHash: "hash-1", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	err := svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "Passw0rd1", NewPassword: "12345678"})
+	require.ErrorIs(t, err, service.ErrWeakPassword)
+
+	userRepo := repository.NewUserRepo(db)
+	reloaded, findErr := userRepo.FindByID(u.ID)
+	require.NoError(t, findErr)
+	require.NoError(t, bcrypt.CompareHashAndPassword([]byte(reloaded.PasswordHash), []byte("Passw0rd1")))
+
+	active, listErr := refreshRepo.ListActiveForUser(u.ID)
+	require.NoError(t, listErr)
+	require.Len(t, active, 1)
 }
 
 func TestUserService_ChangePassword_WrongCurrent_DoesNotChangeHashOrRevokeSessions(t *testing.T) {
@@ -146,7 +181,7 @@ func TestUserService_ChangePassword_WrongCurrent_DoesNotChangeHashOrRevokeSessio
 		ID: uuid.New(), UserID: u.ID, TokenHash: "hash-1", ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
-	err := svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "WrongOne1", NewPassword: "N3wPassw0rd"}, 4)
+	err := svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "WrongOne1", NewPassword: "N3wPassw0rd"})
 	require.ErrorIs(t, err, service.ErrInvalidCredentials)
 
 	// password hash must be untouched
@@ -174,7 +209,7 @@ func TestUserService_ChangePassword_Correct_RevokesAllSessions(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, active, 2, "sanity check: both sessions active before password change")
 
-	err = svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "Passw0rd1", NewPassword: "N3wPassw0rd"}, 4)
+	err = svc.ChangePassword(u.ID, dto.ChangePasswordRequest{CurrentPassword: "Passw0rd1", NewPassword: "N3wPassw0rd"})
 	require.NoError(t, err)
 
 	// all sessions (not just one) must now be revoked

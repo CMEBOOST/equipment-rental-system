@@ -25,7 +25,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	authHandler := handler.NewAuthHandler(authSvc)
 	authMW := middleware.RequireAuth(tokenSvc)
 
-	userSvc := service.NewUserService(userRepo, refreshRepo)
+	userSvc := service.NewUserService(userRepo, refreshRepo, cfg)
 	userHandler := handler.NewUserHandler(userSvc)
 
 	v1 := r.Group("/api/v1")

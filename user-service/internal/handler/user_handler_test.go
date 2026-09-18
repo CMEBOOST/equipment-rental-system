@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/equipment-rental-system/user-service/internal/config"
 	"github.com/equipment-rental-system/user-service/internal/handler"
 	"github.com/equipment-rental-system/user-service/internal/model"
 	"github.com/equipment-rental-system/user-service/internal/repository"
@@ -83,7 +84,7 @@ func setupUserHandler(t *testing.T) (*handler.UserHandler, *model.User, *gorm.DB
 		IsActive:     true,
 	}
 
-	userSvc := service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db))
+	userSvc := service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), &config.Config{BCryptCost: 4})
 	userHandler := handler.NewUserHandler(userSvc)
 	return userHandler, u, db
 }
