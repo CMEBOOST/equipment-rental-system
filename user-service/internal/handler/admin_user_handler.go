@@ -157,3 +157,53 @@ func (h *AdminUserHandler) Delete(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"message": "ลบผู้ใช้เรียบร้อย"}})
 }
+
+// ChangeRole reassigns a user's role by name. Admin-only. The DTO's
+// binding:"oneof=admin staff customer" tag rejects any unrecognized role
+// name with 400 before this handler even runs, so ChangeRole's own
+// gorm.ErrRecordNotFound path only covers an unknown user ID.
+func (h *AdminUserHandler) ChangeRole(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	var req dto.ChangeRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	u, err := h.svc.ChangeRole(id, req.Role, h.roles)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"id": u.ID, "role": u.Role.Name, "updated_at": u.UpdatedAt}})
+}
+
+// ChangeStatus enables or disables a user's account. Admin-only. Disabling
+// revokes all of the target's refresh tokens (see UserService.ChangeStatus).
+// An admin may not disable/enable their own account -- the self-status-change
+// check happens before any DB write, mirroring Delete's self-delete guard.
+func (h *AdminUserHandler) ChangeStatus(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	if requesterID, ok := currentUserID(c); ok && requesterID == id {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": gin.H{"code": "FORBIDDEN", "message": "ไม่สามารถเปลี่ยนสถานะบัญชีตัวเองได้", "details": nil}})
+		return
+	}
+	var req dto.ChangeStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	u, err := h.svc.ChangeStatus(id, req.IsActive)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"id": u.ID, "is_active": u.IsActive, "updated_at": u.UpdatedAt}})
+}

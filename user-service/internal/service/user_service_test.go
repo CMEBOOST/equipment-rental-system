@@ -492,6 +492,161 @@ func TestUserService_CreateUser_TOCTOURace_ConcurrentSameEmail_OneSucceedsOtherG
 	require.Equal(t, 1, successCount)
 }
 
+// setupUserServiceForRoleStatus builds a UserService plus RoleRepo with all
+// three canonical roles seeded (admin/staff/customer), for ChangeRole and
+// ChangeStatus tests that need to move a user between roles or check
+// session-revocation against real DB state.
+func setupUserServiceForRoleStatus(t *testing.T) (*service.UserService, *repository.RoleRepo, *repository.RefreshTokenRepo, *gorm.DB) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{TranslateError: true})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE roles (
+			id INTEGER PRIMARY KEY,
+			name TEXT UNIQUE,
+			description TEXT
+		)
+	`).Error)
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE users (
+			id TEXT PRIMARY KEY,
+			email TEXT UNIQUE,
+			username TEXT UNIQUE,
+			password_hash TEXT,
+			full_name TEXT,
+			phone TEXT,
+			role_id INTEGER,
+			is_active BOOLEAN DEFAULT true,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME,
+			FOREIGN KEY (role_id) REFERENCES roles(id)
+		)
+	`).Error)
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE refresh_tokens (
+			id TEXT PRIMARY KEY,
+			user_id TEXT,
+			token_hash TEXT UNIQUE,
+			expires_at DATETIME,
+			revoked_at DATETIME,
+			ip_address TEXT,
+			user_agent TEXT,
+			created_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id)
+		)
+	`).Error)
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE login_logs (
+			id INTEGER PRIMARY KEY,
+			user_id TEXT,
+			email_attempted TEXT,
+			success BOOLEAN,
+			ip_address TEXT,
+			user_agent TEXT,
+			created_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id)
+		)
+	`).Error)
+
+	require.NoError(t, db.Create(&model.Role{ID: 1, Name: "admin"}).Error)
+	require.NoError(t, db.Create(&model.Role{ID: 2, Name: "staff"}).Error)
+	require.NoError(t, db.Create(&model.Role{ID: 3, Name: "customer"}).Error)
+
+	refreshRepo := repository.NewRefreshTokenRepo(db)
+	svc := service.NewUserService(repository.NewUserRepo(db), refreshRepo, testCfg, repository.NewLoginLogRepo(db))
+	return svc, repository.NewRoleRepo(db), refreshRepo, db
+}
+
+func TestUserService_ChangeStatus_DisablingRevokesSessions(t *testing.T) {
+	svc, _, refreshRepo, db := setupUserServiceForRoleStatus(t)
+
+	u := &model.User{ID: uuid.New(), Email: "y@example.com", Username: "y", PasswordHash: "x", RoleID: 3, IsActive: true}
+	require.NoError(t, db.Create(u).Error)
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: u.ID, TokenHash: "abc", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	updated, err := svc.ChangeStatus(u.ID, false)
+	require.NoError(t, err)
+	require.False(t, updated.IsActive)
+
+	active, err := refreshRepo.ListActiveForUser(u.ID)
+	require.NoError(t, err)
+	require.Empty(t, active)
+
+	// verify against real DB state, not just the returned value
+	reloaded, err := repository.NewUserRepo(db).FindByID(u.ID)
+	require.NoError(t, err)
+	require.False(t, reloaded.IsActive)
+}
+
+func TestUserService_ChangeStatus_EnablingDoesNotRevokeSessions(t *testing.T) {
+	svc, _, refreshRepo, db := setupUserServiceForRoleStatus(t)
+
+	u := &model.User{ID: uuid.New(), Email: "z@example.com", Username: "z", PasswordHash: "x", RoleID: 3, IsActive: false}
+	require.NoError(t, db.Create(u).Error)
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: u.ID, TokenHash: "def", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	updated, err := svc.ChangeStatus(u.ID, true)
+	require.NoError(t, err)
+	require.True(t, updated.IsActive)
+
+	active, err := refreshRepo.ListActiveForUser(u.ID)
+	require.NoError(t, err)
+	require.Len(t, active, 1, "enabling a user must not revoke its existing sessions")
+}
+
+func TestUserService_ChangeStatus_UnknownID_ReturnsErrRecordNotFound(t *testing.T) {
+	svc, _, _, _ := setupUserServiceForRoleStatus(t)
+
+	_, err := svc.ChangeStatus(uuid.New(), false)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestUserService_ChangeRole_UpdatesRoleIDAndReturnsNewRole(t *testing.T) {
+	svc, roleRepo, _, db := setupUserServiceForRoleStatus(t)
+
+	u := &model.User{ID: uuid.New(), Email: "r@example.com", Username: "r", PasswordHash: "x", RoleID: 3, IsActive: true}
+	require.NoError(t, db.Create(u).Error)
+
+	updated, err := svc.ChangeRole(u.ID, "staff", roleRepo)
+	require.NoError(t, err)
+	require.Equal(t, int16(2), updated.RoleID)
+	require.Equal(t, "staff", updated.Role.Name)
+
+	reloaded, err := repository.NewUserRepo(db).FindByID(u.ID)
+	require.NoError(t, err)
+	require.Equal(t, int16(2), reloaded.RoleID, "role change must persist to the DB")
+}
+
+func TestUserService_ChangeRole_UnknownID_ReturnsErrRecordNotFound(t *testing.T) {
+	svc, roleRepo, _, _ := setupUserServiceForRoleStatus(t)
+
+	_, err := svc.ChangeRole(uuid.New(), "staff", roleRepo)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestUserService_ChangeRole_UnknownRoleName_ReturnsErrRecordNotFound(t *testing.T) {
+	svc, roleRepo, _, db := setupUserServiceForRoleStatus(t)
+
+	u := &model.User{ID: uuid.New(), Email: "r2@example.com", Username: "r2", PasswordHash: "x", RoleID: 3, IsActive: true}
+	require.NoError(t, db.Create(u).Error)
+
+	_, err := svc.ChangeRole(u.ID, "superadmin", roleRepo)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "an unknown role name must fail cleanly, not panic or silently no-op")
+
+	// role must be unchanged after the rejected change
+	reloaded, err := repository.NewUserRepo(db).FindByID(u.ID)
+	require.NoError(t, err)
+	require.Equal(t, int16(3), reloaded.RoleID)
+}
+
 func TestUserService_ListUsers_DelegatesToRepoWithFilter(t *testing.T) {
 	svc, roleRepo, _ := setupUserServiceForCreate(t, ":memory:")
 

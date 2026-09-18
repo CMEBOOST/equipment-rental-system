@@ -44,5 +44,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1.GET("/users/:id", authMW, middleware.RequireRole("admin", "staff"), adminUserHandler.Get)
 	v1.PUT("/users/:id", authMW, middleware.RequireRole("admin"), adminUserHandler.Update)
 	v1.DELETE("/users/:id", authMW, middleware.RequireRole("admin"), adminUserHandler.Delete)
+	v1.PATCH("/users/:id/role", authMW, middleware.RequireRole("admin"), adminUserHandler.ChangeRole)
+	v1.PATCH("/users/:id/status", authMW, middleware.RequireRole("admin"), adminUserHandler.ChangeStatus)
 	return r
 }

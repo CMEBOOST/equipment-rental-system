@@ -205,6 +205,56 @@ func (s *UserService) UpdateUser(id uuid.UUID, req dto.UpdateUserRequest) (*mode
 	return u, nil
 }
 
+// ChangeRole reassigns a user's role by name (admin-only). The role lookup
+// happens via RoleRepo.FindByName so an unknown role name surfaces as
+// gorm.ErrRecordNotFound (same sentinel FindByID uses) rather than silently
+// leaving the user's role unchanged.
+//
+// u.Role must be set to the *new* role (not just u.RoleID) before Update:
+// FindByID preloads the user's current Role association, and UserRepo.Update
+// (gorm's Save) auto-saves belongs-to associations, which re-derives RoleID
+// from the still-stale, preloaded u.Role and silently discards a RoleID-only
+// change. Setting both fields to the new role keeps them consistent, so the
+// association save is a no-op instead of an overwrite.
+func (s *UserService) ChangeRole(id uuid.UUID, roleName string, roles *repository.RoleRepo) (*model.User, error) {
+	u, err := s.users.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	role, err := roles.FindByName(roleName)
+	if err != nil {
+		return nil, err
+	}
+	u.RoleID = role.ID
+	u.Role = *role
+	if err := s.users.Update(u); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// ChangeStatus enables or disables a user's account (admin-only). Disabling
+// also revokes all of that user's active refresh tokens -- mirroring
+// ChangePassword's and DeleteUser's revocation behavior -- so a disabled
+// account cannot keep using an already-issued session. Enabling a user does
+// not touch existing sessions.
+func (s *UserService) ChangeStatus(id uuid.UUID, isActive bool) (*model.User, error) {
+	u, err := s.users.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	u.IsActive = isActive
+	if err := s.users.Update(u); err != nil {
+		return nil, err
+	}
+	if !isActive {
+		if err := s.refreshTokens.RevokeAllForUser(id); err != nil {
+			return nil, err
+		}
+	}
+	return u, nil
+}
+
 // DeleteUser soft-deletes the target user (via UserRepo.SoftDelete, which
 // uses GORM's DeletedAt hook) and revokes all of *that user's* refresh
 // tokens so any of their existing sessions stop working immediately. The

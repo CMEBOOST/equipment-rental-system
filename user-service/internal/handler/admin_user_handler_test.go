@@ -655,3 +655,232 @@ func TestAdminUserHandler_Delete_UnknownID_Returns404(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, w.Code)
 }
+
+func TestAdminUserHandler_ChangeRole_ValidRequest_ChangesRole(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "role@example.com", "roleuser", "hash", 3, true,
+	).Error)
+
+	reqBody := map[string]interface{}{"role": "staff"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PATCH", "/api/v1/users/"+userID.String()+"/role", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	h.ChangeRole(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool           `json:"success"`
+		Data    map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Equal(t, "staff", resp.Data["role"])
+
+	// verify against real DB state, not just the returned value
+	updated, err := repository.NewUserRepo(db).FindByID(userID)
+	require.NoError(t, err)
+	require.Equal(t, "staff", updated.Role.Name)
+}
+
+func TestAdminUserHandler_ChangeRole_UnknownID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+	unknownID := uuid.New()
+
+	reqBody := map[string]interface{}{"role": "staff"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PATCH", "/api/v1/users/"+unknownID.String()+"/role", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: unknownID.String()}}
+
+	h.ChangeRole(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestAdminUserHandler_ChangeRole_InvalidUUID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+
+	reqBody := map[string]interface{}{"role": "staff"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PATCH", "/api/v1/users/not-a-uuid/role", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: "not-a-uuid"}}
+
+	h.ChangeRole(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// An unrecognized role name must fail cleanly with 400 (caught by the DTO's
+// binding:"oneof=admin staff customer" tag) rather than panicking or being
+// silently ignored.
+func TestAdminUserHandler_ChangeRole_UnknownRoleName_Returns400(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "role2@example.com", "roleuser2", "hash", 3, true,
+	).Error)
+
+	reqBody := map[string]interface{}{"role": "superadmin"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PATCH", "/api/v1/users/"+userID.String()+"/role", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	require.NotPanics(t, func() { h.ChangeRole(c) })
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+
+	// role must be unchanged after the rejected request
+	unchanged, err := repository.NewUserRepo(db).FindByID(userID)
+	require.NoError(t, err)
+	require.Equal(t, "customer", unchanged.Role.Name)
+}
+
+func TestAdminUserHandler_ChangeStatus_DisablingRevokesSessions(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "status@example.com", "statususer", "hash", 3, true,
+	).Error)
+	refreshRepo := repository.NewRefreshTokenRepo(db)
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: userID, TokenHash: "stok-1", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: userID, TokenHash: "stok-2", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	active, err := refreshRepo.ListActiveForUser(userID)
+	require.NoError(t, err)
+	require.Len(t, active, 2, "sanity check: sessions active before status change")
+
+	callerID := uuid.New()
+	reqBody := map[string]interface{}{"is_active": false}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PATCH", "/api/v1/users/"+userID.String()+"/status", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+	c.Set("user_id", callerID.String())
+
+	h.ChangeStatus(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// verify against real DB state (both is_active and revoked sessions),
+	// not just the handler's returned JSON.
+	updated, err := repository.NewUserRepo(db).FindByID(userID)
+	require.NoError(t, err)
+	require.False(t, updated.IsActive)
+
+	active, err = refreshRepo.ListActiveForUser(userID)
+	require.NoError(t, err)
+	require.Empty(t, active, "all of the TARGET user's sessions must be revoked after disabling")
+}
+
+func TestAdminUserHandler_ChangeStatus_EnablingDoesNotRevokeSessions(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "enab@example.com", "enabuser", "hash", 3, false,
+	).Error)
+	refreshRepo := repository.NewRefreshTokenRepo(db)
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: userID, TokenHash: "etok-1", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	callerID := uuid.New()
+	reqBody := map[string]interface{}{"is_active": true}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PATCH", "/api/v1/users/"+userID.String()+"/status", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+	c.Set("user_id", callerID.String())
+
+	h.ChangeStatus(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	updated, err := repository.NewUserRepo(db).FindByID(userID)
+	require.NoError(t, err)
+	require.True(t, updated.IsActive)
+
+	active, err := refreshRepo.ListActiveForUser(userID)
+	require.NoError(t, err)
+	require.Len(t, active, 1, "enabling must not revoke existing sessions")
+}
+
+func TestAdminUserHandler_ChangeStatus_SelfChange_Returns403_AndDoesNotChange(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	adminID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		adminID.String(), "selfstatus@example.com", "selfstatususer", "hash", 1, true,
+	).Error)
+	refreshRepo := repository.NewRefreshTokenRepo(db)
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: adminID, TokenHash: "self-tok", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	reqBody := map[string]interface{}{"is_active": false}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PATCH", "/api/v1/users/"+adminID.String()+"/status", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: adminID.String()}}
+	c.Set("user_id", adminID.String())
+
+	h.ChangeStatus(c)
+
+	require.Equal(t, http.StatusForbidden, w.Code)
+
+	// must still be active, and sessions must remain, after the rejected
+	// self-status-change (the guard runs before any write, including the
+	// session-revocation write).
+	unchanged, err := repository.NewUserRepo(db).FindByID(adminID)
+	require.NoError(t, err)
+	require.True(t, unchanged.IsActive)
+
+	active, err := refreshRepo.ListActiveForUser(adminID)
+	require.NoError(t, err)
+	require.Len(t, active, 1)
+}
+
+func TestAdminUserHandler_ChangeStatus_UnknownID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+	unknownID := uuid.New()
+	callerID := uuid.New()
+
+	reqBody := map[string]interface{}{"is_active": false}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PATCH", "/api/v1/users/"+unknownID.String()+"/status", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: unknownID.String()}}
+	c.Set("user_id", callerID.String())
+
+	h.ChangeStatus(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
