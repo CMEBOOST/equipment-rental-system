@@ -25,6 +25,16 @@ func NewAdminUserHandler(svc *service.UserService, roles *repository.RoleRepo, c
 func (h *AdminUserHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	// Mirror UserRepo.List's own clamping (and UserHandler.MyLoginLogs's identical
+	// guard, added in Task 11/e97be4a) here so the handler's meta.page/meta.limit
+	// reflect the values actually used for the query, and so totalPages below
+	// never divides by a zero or otherwise invalid limit.
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
 	var isActive *bool
 	if v := c.Query("is_active"); v != "" {
 		b := v == "true"

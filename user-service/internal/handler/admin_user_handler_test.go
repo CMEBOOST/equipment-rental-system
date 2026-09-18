@@ -217,6 +217,92 @@ func TestAdminUserHandler_List_ReturnsAllUsersWithPagination(t *testing.T) {
 	require.Equal(t, float64(2), resp.Meta["total"])
 }
 
+func TestAdminUserHandler_List_LimitZero_DoesNotPanicAndDefaults(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		uuid.New().String(), "a@example.com", "usera", "hash", 3, true,
+	).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users?limit=0", nil)
+
+	require.NotPanics(t, func() { h.List(c) })
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool           `json:"success"`
+		Meta    map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Equal(t, float64(20), resp.Meta["limit"], "limit=0 should be clamped to the default of 20, matching the value actually used for the query, and must not divide by zero when computing total_pages")
+}
+
+func TestAdminUserHandler_List_LimitNonNumeric_DoesNotPanicAndDefaults(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users?limit=abc", nil)
+
+	require.NotPanics(t, func() { h.List(c) })
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool           `json:"success"`
+		Meta    map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Equal(t, float64(20), resp.Meta["limit"], "a non-numeric limit leaves strconv.Atoi's zero value, which must be clamped like limit=0")
+}
+
+func TestAdminUserHandler_List_LimitOutOfRange_ClampsToDefault(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, db.Exec(
+			`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+			uuid.New().String(), "u"+string(rune('a'+i))+"@example.com", "user"+string(rune('a'+i)), "hash", 3, true,
+		).Error)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users?limit=500", nil)
+
+	h.List(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool             `json:"success"`
+		Data    []map[string]any `json:"data"`
+		Meta    map[string]any   `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Equal(t, float64(20), resp.Meta["limit"], "limit=500 is out of [1,100] and must clamp to 20, consistent with the actually-applied query limit")
+	require.Len(t, resp.Data, 3)
+}
+
+func TestAdminUserHandler_List_PageZero_ClampsToOne(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users?page=0", nil)
+
+	h.List(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Meta map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, float64(1), resp.Meta["page"])
+}
+
 func TestAdminUserHandler_List_FiltersByRole(t *testing.T) {
 	h, db := setupAdminUserHandler(t)
 
