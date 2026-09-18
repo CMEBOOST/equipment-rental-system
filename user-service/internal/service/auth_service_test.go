@@ -100,3 +100,120 @@ func TestAuthService_Register_AssignsCustomerRole(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int16(3), u.RoleID)
 }
+
+func TestAuthService_Register_TOCTOURace_EmailViolation(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+
+	// Setup database
+	require.NoError(t, db.Exec(`
+		CREATE TABLE roles (
+			id INTEGER PRIMARY KEY,
+			name TEXT UNIQUE,
+			description TEXT
+		)
+	`).Error)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE users (
+			id TEXT PRIMARY KEY,
+			email TEXT UNIQUE,
+			username TEXT UNIQUE,
+			password_hash TEXT,
+			full_name TEXT,
+			phone TEXT,
+			role_id INTEGER,
+			is_active BOOLEAN DEFAULT true,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME,
+			FOREIGN KEY (role_id) REFERENCES roles(id)
+		)
+	`).Error)
+	require.NoError(t, db.Create(&model.Role{ID: 3, Name: "customer"}).Error)
+
+	// Insert a user directly (simulating concurrent registration)
+	userRepo := repository.NewUserRepo(db)
+	// Use raw SQL to bypass GORM's ID validation
+	require.NoError(t, db.Exec("INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)",
+		"550e8400-e29b-41d4-a716-446655440000", "race@example.com", "existing", "hash", 3, true).Error)
+
+	// Now try to register with the same email - should detect it via Create() failure + re-query
+	cfg := &config.Config{BCryptCost: 4, JWTSecret: "test-secret-min-32-characters-ok", JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 168 * time.Hour}
+	authSvc := service.NewAuthService(userRepo, repository.NewRoleRepo(db),
+		repository.NewRefreshTokenRepo(db), repository.NewLoginLogRepo(db),
+		service.NewTokenService(cfg.JWTSecret, cfg.JWTAccessTTL), cfg)
+
+	u, err := authSvc.Register(dto.RegisterRequest{Email: "race@example.com", Username: "newuser", Password: "Passw0rd1"})
+	require.Nil(t, u)
+	require.ErrorIs(t, err, service.ErrEmailExists)
+}
+
+func TestAuthService_Register_TOCTOURace_UsernameViolation(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+
+	// Setup database
+	require.NoError(t, db.Exec(`
+		CREATE TABLE roles (
+			id INTEGER PRIMARY KEY,
+			name TEXT UNIQUE,
+			description TEXT
+		)
+	`).Error)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE users (
+			id TEXT PRIMARY KEY,
+			email TEXT UNIQUE,
+			username TEXT UNIQUE,
+			password_hash TEXT,
+			full_name TEXT,
+			phone TEXT,
+			role_id INTEGER,
+			is_active BOOLEAN DEFAULT true,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME,
+			FOREIGN KEY (role_id) REFERENCES roles(id)
+		)
+	`).Error)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE refresh_tokens (
+			id TEXT PRIMARY KEY,
+			user_id TEXT,
+			token_hash TEXT UNIQUE,
+			expires_at DATETIME,
+			revoked_at DATETIME,
+			ip_address TEXT,
+			user_agent TEXT,
+			created_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id)
+		)
+	`).Error)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE login_logs (
+			id INTEGER PRIMARY KEY,
+			user_id TEXT,
+			email_attempted TEXT,
+			success BOOLEAN,
+			ip_address TEXT,
+			user_agent TEXT,
+			created_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id)
+		)
+	`).Error)
+	require.NoError(t, db.Create(&model.Role{ID: 3, Name: "customer"}).Error)
+
+	// Insert a user directly with specific username
+	require.NoError(t, db.Exec("INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)",
+		"550e8400-e29b-41d4-a716-446655440001", "user@example.com", "raceuser", "hash", 3, true).Error)
+
+	// Try to register with the same username - should detect it via Create() failure + re-query
+	cfg := &config.Config{BCryptCost: 4, JWTSecret: "test-secret-min-32-characters-ok", JWTAccessTTL: 15 * time.Minute, JWTRefreshTTL: 168 * time.Hour}
+	authSvc := service.NewAuthService(repository.NewUserRepo(db), repository.NewRoleRepo(db),
+		repository.NewRefreshTokenRepo(db), repository.NewLoginLogRepo(db),
+		service.NewTokenService(cfg.JWTSecret, cfg.JWTAccessTTL), cfg)
+
+	u, err := authSvc.Register(dto.RegisterRequest{Email: "newuser@example.com", Username: "raceuser", Password: "Passw0rd1"})
+	require.Nil(t, u)
+	require.ErrorIs(t, err, service.ErrUsernameExists)
+}

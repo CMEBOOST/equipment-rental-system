@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"regexp"
-	"strings"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -21,6 +20,7 @@ var (
 	ErrWeakPassword     = errors.New("password does not meet strength requirements")
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrAccountDisabled  = errors.New("account disabled")
+	ErrConflict         = errors.New("conflict")
 )
 
 var passwordHasDigitAndLetter = regexp.MustCompile(`^.*[A-Za-z].*$`)
@@ -83,12 +83,15 @@ func (s *AuthService) Register(req dto.RegisterRequest) (*model.User, error) {
 	}
 	if err := s.users.Create(u); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			// Inspect error message to distinguish email vs username conflict
-			if strings.Contains(err.Error(), "uni_users_email") {
+			// TOCTOU race: re-query to determine which unique constraint was violated
+			if _, err := s.users.FindByEmail(req.Email); err == nil {
 				return nil, ErrEmailExists
-			} else if strings.Contains(err.Error(), "uni_users_username") {
+			}
+			if _, err := s.users.FindByUsername(req.Username); err == nil {
 				return nil, ErrUsernameExists
 			}
+			// Practically impossible case: constraint violation but neither re-query found a match
+			return nil, ErrConflict
 		}
 		return nil, err
 	}
