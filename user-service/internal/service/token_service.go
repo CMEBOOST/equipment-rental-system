@@ -77,3 +77,8 @@ func HashRefreshToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }
+
+// uuidParse parses a JWT "sub" claim (a user ID) into a uuid.UUID. Small
+// wrapper kept here alongside the other token-related helpers so callers in
+// this package don't need to import uuid directly just for this one call.
+func uuidParse(s string) (uuid.UUID, error) { return uuid.Parse(s) }

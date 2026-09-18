@@ -260,3 +260,50 @@ func TestAuthService_Logout_RevokesToken(t *testing.T) {
 	_, _, _, err = svc.Refresh(refresh)
 	require.ErrorIs(t, err, service.ErrInvalidRefreshToken)
 }
+
+func TestAuthService_VerifyToken_ValidToken_ReturnsUser(t *testing.T) {
+	svc := setupAuthService(t)
+	_, err := svc.Register(dto.RegisterRequest{Email: "u@example.com", Username: "useru", Password: "Passw0rd1"})
+	require.NoError(t, err)
+	access, _, _, user, err := svc.Login(dto.LoginRequest{Email: "u@example.com", Password: "Passw0rd1"}, "ip", "ua")
+	require.NoError(t, err)
+
+	gotUser, expiresAt, err := svc.VerifyToken(access)
+	require.NoError(t, err)
+	require.Equal(t, user.ID, gotUser.ID)
+	require.True(t, expiresAt.After(time.Now()))
+}
+
+func TestAuthService_VerifyToken_DisabledAccount_ReturnsErrAccountDisabled(t *testing.T) {
+	svc := setupAuthService(t)
+	_, err := svc.Register(dto.RegisterRequest{Email: "v@example.com", Username: "userv", Password: "Passw0rd1"})
+	require.NoError(t, err)
+	access, _, _, user, err := svc.Login(dto.LoginRequest{Email: "v@example.com", Password: "Passw0rd1"}, "ip", "ua")
+	require.NoError(t, err)
+
+	user.IsActive = false
+	require.NoError(t, svc.UsersRepoForTest().Update(user))
+
+	_, _, err = svc.VerifyToken(access)
+	require.ErrorIs(t, err, service.ErrAccountDisabled)
+}
+
+func TestAuthService_VerifyToken_MalformedToken_ReturnsErrInvalidCredentials(t *testing.T) {
+	svc := setupAuthService(t)
+
+	_, _, err := svc.VerifyToken("not-a-real-jwt")
+	require.ErrorIs(t, err, service.ErrInvalidCredentials)
+}
+
+func TestAuthService_VerifyToken_UnknownUser_ReturnsErrInvalidCredentials(t *testing.T) {
+	svc := setupAuthService(t)
+	_, err := svc.Register(dto.RegisterRequest{Email: "w@example.com", Username: "userw", Password: "Passw0rd1"})
+	require.NoError(t, err)
+	access, _, _, user, err := svc.Login(dto.LoginRequest{Email: "w@example.com", Password: "Passw0rd1"}, "ip", "ua")
+	require.NoError(t, err)
+
+	require.NoError(t, svc.UsersRepoForTest().SoftDelete(user.ID))
+
+	_, _, err = svc.VerifyToken(access)
+	require.ErrorIs(t, err, service.ErrInvalidCredentials)
+}

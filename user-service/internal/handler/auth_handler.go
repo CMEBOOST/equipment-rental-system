@@ -93,6 +93,34 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	}})
 }
 
+// VerifyRequest is the body for the internal-only POST /auth/verify
+// endpoint, called by other backend services (e.g. product-service,
+// rental-service) to check a token and resolve the associated user.
+type VerifyRequest struct {
+	Token string `json:"token" binding:"required"`
+}
+
+func (h *AuthHandler) Verify(c *gin.Context) {
+	var req VerifyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	u, expiresAt, err := h.svc.VerifyToken(req.Token)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAccountDisabled):
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "error": gin.H{"code": "ACCOUNT_DISABLED", "message": "บัญชีถูกปิดการใช้งาน", "details": nil}})
+		default:
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": gin.H{"code": "UNAUTHENTICATED", "message": "token ไม่ถูกต้องหรือหมดอายุ", "details": nil}})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"active": true, "user_id": u.ID, "email": u.Email, "username": u.Username, "role": u.Role.Name, "expires_at": expiresAt,
+	}})
+}
+
 func (h *AuthHandler) Logout(c *gin.Context) {
 	var req dto.LogoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

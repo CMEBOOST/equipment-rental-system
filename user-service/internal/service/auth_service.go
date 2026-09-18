@@ -216,3 +216,32 @@ func (s *AuthService) Refresh(rawToken string) (string, string, int, error) {
 func (s *AuthService) Logout(rawToken string) error {
 	return s.refreshTokens.RevokeByHash(HashRefreshToken(rawToken))
 }
+
+// VerifyToken parses a raw JWT access token and returns the associated user
+// plus the token's expiry, for use by other backend services (via the
+// internal-only POST /auth/verify endpoint) that need to check a caller's
+// identity without duplicating this service's JWT/DB logic. Any problem with
+// the token itself (malformed, expired, bad signature, or referring to a
+// user that no longer exists) is reported uniformly as ErrInvalidCredentials
+// so callers can't distinguish those cases from token contents. A
+// cryptographically valid token for a deactivated account is reported
+// separately as ErrAccountDisabled so callers don't mistake a disabled
+// account for a valid one.
+func (s *AuthService) VerifyToken(rawToken string) (*model.User, time.Time, error) {
+	claims, err := s.tokens.ParseAccessToken(rawToken)
+	if err != nil {
+		return nil, time.Time{}, ErrInvalidCredentials
+	}
+	userID, err := uuidParse(claims.Sub)
+	if err != nil {
+		return nil, time.Time{}, ErrInvalidCredentials
+	}
+	u, err := s.users.FindByID(userID)
+	if err != nil {
+		return nil, time.Time{}, ErrInvalidCredentials
+	}
+	if !u.IsActive {
+		return nil, time.Time{}, ErrAccountDisabled
+	}
+	return u, claims.ExpiresAt.Time, nil
+}

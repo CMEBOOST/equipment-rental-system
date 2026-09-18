@@ -35,6 +35,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1.POST("/auth/login", authHandler.Login)
 	v1.POST("/auth/refresh", authHandler.Refresh)
 	v1.POST("/auth/logout", authMW, authHandler.Logout)
+	v1.POST("/auth/verify", middleware.RequireInternalKey(cfg.InternalAPIKey), authHandler.Verify)
 	v1.GET("/me", authMW, userHandler.Me)
 	v1.PUT("/me", authMW, userHandler.UpdateMe)
 	v1.PUT("/me/password", authMW, userHandler.ChangePassword)
