@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"strings"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
@@ -8,6 +10,14 @@ import (
 )
 
 type UserRepo struct{ db *gorm.DB }
+
+// allowedSortColumns defines the columns that can be safely used in ORDER BY clauses
+var allowedSortColumns = map[string]bool{
+	"created_at": true,
+	"email":      true,
+	"username":   true,
+	"full_name":  true,
+}
 
 func NewUserRepo(db *gorm.DB) *UserRepo { return &UserRepo{db: db} }
 
@@ -62,13 +72,20 @@ func (r *UserRepo) List(f UserFilter) ([]model.User, int64, error) {
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	sort, order := f.Sort, f.Order
-	if sort == "" {
+
+	// Validate and sanitize sort column (prevent SQL injection)
+	sort := f.Sort
+	if sort == "" || !allowedSortColumns[sort] {
 		sort = "created_at"
 	}
-	if order == "" {
+
+	// Validate and sanitize order direction (prevent SQL injection)
+	order := strings.ToLower(strings.TrimSpace(f.Order))
+	if order != "asc" && order != "desc" {
 		order = "desc"
 	}
+
+	// Validate pagination parameters
 	page, limit := f.Page, f.Limit
 	if page < 1 {
 		page = 1
@@ -76,6 +93,7 @@ func (r *UserRepo) List(f UserFilter) ([]model.User, int64, error) {
 	if limit < 1 || limit > 100 {
 		limit = 20
 	}
+
 	var users []model.User
 	err := q.Order(sort + " " + order).Offset((page - 1) * limit).Limit(limit).Find(&users).Error
 	return users, total, err
