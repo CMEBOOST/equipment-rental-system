@@ -22,6 +22,7 @@ var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrAccountDisabled  = errors.New("account disabled")
 	ErrConflict         = errors.New("conflict")
+	ErrInvalidRefreshToken = errors.New("invalid or expired refresh token")
 )
 
 var passwordHasDigitAndLetter = regexp.MustCompile(`^.*[A-Za-z].*$`)
@@ -171,4 +172,47 @@ func (s *AuthService) Login(req dto.LoginRequest, ip, userAgent string) (string,
 
 	success = true
 	return access, rawRefresh, expiresIn, user, nil
+}
+
+// Refresh rotates a valid opaque refresh token: the presented token is
+// revoked and a brand-new access/refresh token pair is issued. Any problem
+// with the presented token (unknown, revoked, expired, or an unexpected
+// lookup error) is reported uniformly as ErrInvalidRefreshToken so callers
+// can't distinguish those cases from token contents.
+func (s *AuthService) Refresh(rawToken string) (string, string, int, error) {
+	hash := HashRefreshToken(rawToken)
+	rt, err := s.refreshTokens.FindByHash(hash)
+	if err != nil || rt.RevokedAt != nil || rt.ExpiresAt.Before(time.Now()) {
+		return "", "", 0, ErrInvalidRefreshToken
+	}
+	u, err := s.users.FindByID(rt.UserID)
+	if err != nil {
+		return "", "", 0, ErrInvalidRefreshToken
+	}
+	if !u.IsActive {
+		return "", "", 0, ErrAccountDisabled
+	}
+	if err := s.refreshTokens.RevokeByHash(hash); err != nil {
+		return "", "", 0, err
+	}
+	access, expiresIn, err := s.tokens.GenerateAccessToken(*u)
+	if err != nil {
+		return "", "", 0, err
+	}
+	newRaw, err := NewOpaqueRefreshToken()
+	if err != nil {
+		return "", "", 0, err
+	}
+	if err := s.refreshTokens.Create(&model.RefreshToken{
+		UserID: u.ID, TokenHash: HashRefreshToken(newRaw), ExpiresAt: time.Now().Add(s.cfg.JWTRefreshTTL),
+	}); err != nil {
+		return "", "", 0, err
+	}
+	return access, newRaw, expiresIn, nil
+}
+
+// Logout revokes the presented refresh token so it can no longer be used to
+// obtain new tokens.
+func (s *AuthService) Logout(rawToken string) error {
+	return s.refreshTokens.RevokeByHash(HashRefreshToken(rawToken))
 }

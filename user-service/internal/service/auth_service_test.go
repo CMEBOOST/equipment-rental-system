@@ -231,3 +231,32 @@ func TestAuthService_Login_NonexistentEmail_WritesLoginLogWithNilUserID(t *testi
 	require.False(t, logs[0].Success)
 	require.Nil(t, logs[0].UserID)
 }
+
+func TestAuthService_Refresh_RotatesToken(t *testing.T) {
+	svc := setupAuthService(t)
+	_, err := svc.Register(dto.RegisterRequest{Email: "f@example.com", Username: "userf", Password: "Passw0rd1"})
+	require.NoError(t, err)
+	_, refresh, _, _, err := svc.Login(dto.LoginRequest{Email: "f@example.com", Password: "Passw0rd1"}, "ip", "ua")
+	require.NoError(t, err)
+
+	_, newRefresh, expiresIn, err := svc.Refresh(refresh)
+	require.NoError(t, err)
+	require.NotEqual(t, refresh, newRefresh)
+	require.Equal(t, 900, expiresIn)
+
+	// old token must now be rejected
+	_, _, _, err = svc.Refresh(refresh)
+	require.ErrorIs(t, err, service.ErrInvalidRefreshToken)
+}
+
+func TestAuthService_Logout_RevokesToken(t *testing.T) {
+	svc := setupAuthService(t)
+	_, err := svc.Register(dto.RegisterRequest{Email: "g@example.com", Username: "userg", Password: "Passw0rd1"})
+	require.NoError(t, err)
+	_, refresh, _, _, err := svc.Login(dto.LoginRequest{Email: "g@example.com", Password: "Passw0rd1"}, "ip", "ua")
+	require.NoError(t, err)
+
+	require.NoError(t, svc.Logout(refresh))
+	_, _, _, err = svc.Refresh(refresh)
+	require.ErrorIs(t, err, service.ErrInvalidRefreshToken)
+}
