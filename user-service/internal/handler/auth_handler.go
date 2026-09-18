@@ -45,3 +45,27 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		"phone": u.Phone, "role": u.Role.Name, "is_active": u.IsActive, "created_at": u.CreatedAt,
 	}})
 }
+
+func (h *AuthHandler) Login(c *gin.Context) {
+	var req dto.LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	access, refresh, expiresIn, user, err := h.svc.Login(req, c.ClientIP(), c.Request.UserAgent())
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidCredentials):
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": gin.H{"code": "INVALID_CREDENTIALS", "message": "อีเมลหรือรหัสผ่านไม่ถูกต้อง", "details": nil}})
+		case errors.Is(err, service.ErrAccountDisabled):
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "error": gin.H{"code": "ACCOUNT_DISABLED", "message": "บัญชีถูกปิดการใช้งาน", "details": nil}})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"access_token": access, "refresh_token": refresh, "token_type": "Bearer", "expires_in": expiresIn,
+		"user": gin.H{"id": user.ID, "email": user.Email, "username": user.Username, "full_name": user.FullName, "role": user.Role.Name},
+	}})
+}

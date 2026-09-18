@@ -152,3 +152,82 @@ func TestAuthService_Register_ConcurrentSameEmail_OneSucceedsOtherGetsProperErro
 	}
 	require.Equal(t, 1, successCount)
 }
+
+func TestAuthService_Login_WrongPassword_ReturnsErrInvalidCredentials(t *testing.T) {
+	svc := setupAuthService(t)
+	_, err := svc.Register(dto.RegisterRequest{Email: "c@example.com", Username: "userc", Password: "Passw0rd1"})
+	require.NoError(t, err)
+
+	_, _, _, _, err = svc.Login(dto.LoginRequest{Email: "c@example.com", Password: "WrongPass1"}, "1.2.3.4", "test-agent")
+	require.ErrorIs(t, err, service.ErrInvalidCredentials)
+}
+
+func TestAuthService_Login_Success_ReturnsTokens(t *testing.T) {
+	svc := setupAuthService(t)
+	_, err := svc.Register(dto.RegisterRequest{Email: "d@example.com", Username: "userd", Password: "Passw0rd1"})
+	require.NoError(t, err)
+
+	access, refresh, expiresIn, user, err := svc.Login(dto.LoginRequest{Email: "d@example.com", Password: "Passw0rd1"}, "1.2.3.4", "test-agent")
+	require.NoError(t, err)
+	require.NotEmpty(t, access)
+	require.Len(t, refresh, 64)
+	require.Equal(t, 900, expiresIn)
+	require.Equal(t, "userd", user.Username)
+}
+
+func TestAuthService_Login_DisabledAccount_ReturnsErrAccountDisabled(t *testing.T) {
+	svc := setupAuthService(t)
+	u, err := svc.Register(dto.RegisterRequest{Email: "e@example.com", Username: "usere", Password: "Passw0rd1"})
+	require.NoError(t, err)
+	u.IsActive = false
+	require.NoError(t, svc.UsersRepoForTest().Update(u))
+
+	_, _, _, _, err = svc.Login(dto.LoginRequest{Email: "e@example.com", Password: "Passw0rd1"}, "1.2.3.4", "test-agent")
+	require.ErrorIs(t, err, service.ErrAccountDisabled)
+}
+
+func TestAuthService_Login_NonexistentEmail_ReturnsErrInvalidCredentials(t *testing.T) {
+	svc := setupAuthService(t)
+
+	_, _, _, _, err := svc.Login(dto.LoginRequest{Email: "nobody@example.com", Password: "Passw0rd1"}, "1.2.3.4", "test-agent")
+	require.ErrorIs(t, err, service.ErrInvalidCredentials)
+}
+
+func TestAuthService_Login_WritesLoginLog_OnSuccessAndFailure(t *testing.T) {
+	svc, db := setupAuthServiceWithDB(t, ":memory:")
+	u, err := svc.Register(dto.RegisterRequest{Email: "f@example.com", Username: "userf", Password: "Passw0rd1"})
+	require.NoError(t, err)
+
+	_, _, _, _, err = svc.Login(dto.LoginRequest{Email: "f@example.com", Password: "WrongPass1"}, "9.9.9.9", "agent-fail")
+	require.ErrorIs(t, err, service.ErrInvalidCredentials)
+
+	_, _, _, _, err = svc.Login(dto.LoginRequest{Email: "f@example.com", Password: "Passw0rd1"}, "9.9.9.9", "agent-success")
+	require.NoError(t, err)
+
+	var logs []model.LoginLog
+	require.NoError(t, db.Where("email_attempted = ?", "f@example.com").Order("id asc").Find(&logs).Error)
+	require.Len(t, logs, 2)
+
+	require.False(t, logs[0].Success)
+	require.NotNil(t, logs[0].UserID)
+	require.Equal(t, u.ID, *logs[0].UserID)
+	require.Equal(t, "agent-fail", logs[0].UserAgent)
+
+	require.True(t, logs[1].Success)
+	require.NotNil(t, logs[1].UserID)
+	require.Equal(t, u.ID, *logs[1].UserID)
+	require.Equal(t, "agent-success", logs[1].UserAgent)
+}
+
+func TestAuthService_Login_NonexistentEmail_WritesLoginLogWithNilUserID(t *testing.T) {
+	svc, db := setupAuthServiceWithDB(t, ":memory:")
+
+	_, _, _, _, err := svc.Login(dto.LoginRequest{Email: "ghost@example.com", Password: "whatever1"}, "1.1.1.1", "ghost-agent")
+	require.ErrorIs(t, err, service.ErrInvalidCredentials)
+
+	var logs []model.LoginLog
+	require.NoError(t, db.Where("email_attempted = ?", "ghost@example.com").Find(&logs).Error)
+	require.Len(t, logs, 1)
+	require.False(t, logs[0].Success)
+	require.Nil(t, logs[0].UserID)
+}

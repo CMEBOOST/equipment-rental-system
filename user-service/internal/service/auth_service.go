@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"regexp"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -102,4 +103,72 @@ func (s *AuthService) Register(req dto.RegisterRequest) (*model.User, error) {
 	}
 	u.Role = *role
 	return u, nil
+}
+
+// UsersRepoForTest exposes the user repository for test setup only (e.g.
+// disabling an account after registration). Not intended for production use.
+func (s *AuthService) UsersRepoForTest() *repository.UserRepo { return s.users }
+
+// Login authenticates a user by email/password, records an audit entry in
+// login_logs for every attempt (success or failure), and on success issues a
+// new JWT access token plus an opaque refresh token.
+func (s *AuthService) Login(req dto.LoginRequest, ip, userAgent string) (string, string, int, *model.User, error) {
+	var user *model.User
+	success := false
+
+	// This defer always runs, regardless of which return statement below is
+	// hit, so every login attempt — success or failure, including unexpected
+	// errors — is recorded in login_logs exactly once.
+	defer func() {
+		logEntry := &model.LoginLog{
+			EmailAttempted: req.Email,
+			Success:        success,
+			IPAddress:      ip,
+			UserAgent:      userAgent,
+		}
+		if user != nil {
+			id := user.ID
+			logEntry.UserID = &id
+		}
+		_ = s.logs.Create(logEntry)
+	}()
+
+	u, err := s.users.FindByEmail(req.Email)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", "", 0, nil, ErrInvalidCredentials
+		}
+		// Unexpected error (DB connection issue, etc.) — propagate rather than
+		// misreporting it as invalid credentials.
+		return "", "", 0, nil, err
+	}
+	user = u
+
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
+		return "", "", 0, nil, ErrInvalidCredentials
+	}
+	if !user.IsActive {
+		return "", "", 0, nil, ErrAccountDisabled
+	}
+
+	access, expiresIn, err := s.tokens.GenerateAccessToken(*user)
+	if err != nil {
+		return "", "", 0, nil, err
+	}
+	rawRefresh, err := NewOpaqueRefreshToken()
+	if err != nil {
+		return "", "", 0, nil, err
+	}
+	if err := s.refreshTokens.Create(&model.RefreshToken{
+		UserID:    user.ID,
+		TokenHash: HashRefreshToken(rawRefresh),
+		ExpiresAt: time.Now().Add(s.cfg.JWTRefreshTTL),
+		IPAddress: ip,
+		UserAgent: userAgent,
+	}); err != nil {
+		return "", "", 0, nil, err
+	}
+
+	success = true
+	return access, rawRefresh, expiresIn, user, nil
 }
