@@ -157,3 +157,65 @@ func (s *UserService) CreateUser(req dto.CreateUserRequest, roles *repository.Ro
 	u.Role = *role
 	return u, nil
 }
+
+// UpdateUser is the admin equivalent of UpdateProfile, but for PUT
+// /users/{id}: it also allows changing email/username, which are unique
+// columns. Because this edits an *existing* row (unlike CreateUser/Register,
+// which insert a brand-new one), a naive re-query-on-conflict guard is not
+// safe here: if the request leaves email unchanged and only username
+// collides with another user, FindByEmail(req.Email) would still find a
+// match -- the target's own row. Excluding the target's own ID from each
+// re-query is what correctly attributes the conflict to the field that
+// actually caused it.
+func (s *UserService) UpdateUser(id uuid.UUID, req dto.UpdateUserRequest) (*model.User, error) {
+	u, err := s.users.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if req.Email != nil {
+		u.Email = *req.Email
+	}
+	if req.Username != nil {
+		u.Username = *req.Username
+	}
+	if req.FullName != nil {
+		u.FullName = *req.FullName
+	}
+	if req.Phone != nil {
+		u.Phone = *req.Phone
+	}
+	if err := s.users.Update(u); err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			if req.Email != nil {
+				if existing, checkErr := s.users.FindByEmail(*req.Email); checkErr == nil && existing.ID != id {
+					return nil, ErrEmailExists
+				}
+			}
+			if req.Username != nil {
+				if existing, checkErr := s.users.FindByUsername(*req.Username); checkErr == nil && existing.ID != id {
+					return nil, ErrUsernameExists
+				}
+			}
+			// Practically impossible case: constraint violated but re-queries
+			// (excluding the target itself) found no other owner.
+			return nil, ErrConflict
+		}
+		return nil, err
+	}
+	return u, nil
+}
+
+// DeleteUser soft-deletes the target user (via UserRepo.SoftDelete, which
+// uses GORM's DeletedAt hook) and revokes all of *that user's* refresh
+// tokens so any of their existing sessions stop working immediately. The
+// existence check happens first so a request for an unknown ID is reported
+// as not-found rather than silently revoking tokens for a nonexistent user.
+func (s *UserService) DeleteUser(id uuid.UUID) error {
+	if _, err := s.users.FindByID(id); err != nil {
+		return err
+	}
+	if err := s.refreshTokens.RevokeAllForUser(id); err != nil {
+		return err
+	}
+	return s.users.SoftDelete(id)
+}

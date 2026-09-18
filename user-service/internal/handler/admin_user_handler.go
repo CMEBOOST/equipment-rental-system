@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"github.com/equipment-rental-system/user-service/internal/dto"
 	"github.com/equipment-rental-system/user-service/internal/repository"
@@ -83,4 +85,75 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 		"id": u.ID, "email": u.Email, "username": u.Username, "full_name": u.FullName,
 		"phone": u.Phone, "role": u.Role.Name, "is_active": u.IsActive, "created_at": u.CreatedAt,
 	}})
+}
+
+// Get returns a single user by ID. Available to admin and staff.
+func (h *AdminUserHandler) Get(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	u, err := h.svc.GetProfile(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"id": u.ID, "email": u.Email, "username": u.Username, "full_name": u.FullName,
+		"phone": u.Phone, "role": u.Role.Name, "is_active": u.IsActive,
+		"created_at": u.CreatedAt, "updated_at": u.UpdatedAt,
+	}})
+}
+
+// Update edits full_name/phone/email/username for a user by ID. Admin-only.
+func (h *AdminUserHandler) Update(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	var req dto.UpdateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	u, err := h.svc.UpdateUser(id, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		case errors.Is(err, service.ErrEmailExists):
+			c.JSON(http.StatusConflict, gin.H{"success": false, "error": gin.H{"code": "EMAIL_ALREADY_EXISTS", "message": "อีเมลนี้ถูกใช้งานแล้ว", "details": nil}})
+		case errors.Is(err, service.ErrUsernameExists):
+			c.JSON(http.StatusConflict, gin.H{"success": false, "error": gin.H{"code": "USERNAME_ALREADY_EXISTS", "message": "username นี้ถูกใช้แล้ว", "details": nil}})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"id": u.ID, "email": u.Email, "username": u.Username, "full_name": u.FullName,
+		"phone": u.Phone, "role": u.Role.Name, "is_active": u.IsActive, "updated_at": u.UpdatedAt,
+	}})
+}
+
+// Delete soft-deletes a user by ID and revokes all of their refresh tokens.
+// Admin-only. An admin may not delete their own account.
+func (h *AdminUserHandler) Delete(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	// Self-deletion check happens before any DB mutation below.
+	if requesterID, ok := currentUserID(c); ok && requesterID == id {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": gin.H{"code": "FORBIDDEN", "message": "ไม่สามารถลบบัญชีตัวเองได้", "details": nil}})
+		return
+	}
+	if err := h.svc.DeleteUser(id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"message": "ลบผู้ใช้เรียบร้อย"}})
 }

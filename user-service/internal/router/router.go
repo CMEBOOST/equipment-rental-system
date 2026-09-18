@@ -41,5 +41,8 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1.GET("/me/sessions", authMW, userHandler.MySessions)
 	v1.GET("/users", authMW, middleware.RequireRole("admin"), adminUserHandler.List)
 	v1.POST("/users", authMW, middleware.RequireRole("admin"), adminUserHandler.Create)
+	v1.GET("/users/:id", authMW, middleware.RequireRole("admin", "staff"), adminUserHandler.Get)
+	v1.PUT("/users/:id", authMW, middleware.RequireRole("admin"), adminUserHandler.Update)
+	v1.DELETE("/users/:id", authMW, middleware.RequireRole("admin"), adminUserHandler.Delete)
 	return r
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -330,4 +331,327 @@ func TestAdminUserHandler_List_FiltersByRole(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.Len(t, resp.Data, 1)
 	require.Equal(t, "staff@example.com", resp.Data[0]["email"])
+}
+
+func TestAdminUserHandler_Get_ReturnsUser(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, full_name, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		userID.String(), "get@example.com", "getuser", "hash", "Get User", 3, true,
+	).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/"+userID.String(), nil)
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	h.Get(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool           `json:"success"`
+		Data    map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Equal(t, "get@example.com", resp.Data["email"])
+	require.Equal(t, "customer", resp.Data["role"])
+}
+
+func TestAdminUserHandler_Get_UnknownID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	unknownID := uuid.New()
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/"+unknownID.String(), nil)
+	c.Params = gin.Params{{Key: "id", Value: unknownID.String()}}
+
+	h.Get(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestAdminUserHandler_Get_InvalidUUID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/users/not-a-uuid", nil)
+	c.Params = gin.Params{{Key: "id", Value: "not-a-uuid"}}
+
+	h.Get(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestAdminUserHandler_Update_ChangesFields(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, full_name, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		userID.String(), "old@example.com", "olduser", "hash", "Old Name", 3, true,
+	).Error)
+
+	reqBody := map[string]interface{}{
+		"email": "new@example.com", "username": "newuser", "full_name": "New Name", "phone": "0812345678",
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PUT", "/api/v1/users/"+userID.String(), bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	h.Update(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Success bool           `json:"success"`
+		Data    map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Equal(t, "new@example.com", resp.Data["email"])
+	require.Equal(t, "newuser", resp.Data["username"])
+	require.Equal(t, "New Name", resp.Data["full_name"])
+
+	updated, err := repository.NewUserRepo(db).FindByID(userID)
+	require.NoError(t, err)
+	require.Equal(t, "new@example.com", updated.Email)
+	require.Equal(t, "newuser", updated.Username)
+}
+
+func TestAdminUserHandler_Update_DuplicateEmail_Returns409(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	existingID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		existingID.String(), "taken@example.com", "takenuser", "hash", 3, true,
+	).Error)
+	targetID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		targetID.String(), "target@example.com", "targetuser", "hash", 3, true,
+	).Error)
+
+	reqBody := map[string]interface{}{"email": "taken@example.com"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PUT", "/api/v1/users/"+targetID.String(), bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: targetID.String()}}
+
+	h.Update(c)
+
+	require.Equal(t, http.StatusConflict, w.Code)
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "EMAIL_ALREADY_EXISTS", resp.Error.Code)
+
+	// target user's email must be unchanged after the rejected update
+	unchanged, err := repository.NewUserRepo(db).FindByID(targetID)
+	require.NoError(t, err)
+	require.Equal(t, "target@example.com", unchanged.Email)
+}
+
+func TestAdminUserHandler_Update_DuplicateUsername_Returns409(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	existingID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		existingID.String(), "existing@example.com", "existinguser", "hash", 3, true,
+	).Error)
+	targetID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		targetID.String(), "target2@example.com", "targetuser2", "hash", 3, true,
+	).Error)
+
+	reqBody := map[string]interface{}{"username": "existinguser"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PUT", "/api/v1/users/"+targetID.String(), bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: targetID.String()}}
+
+	h.Update(c)
+
+	require.Equal(t, http.StatusConflict, w.Code)
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "USERNAME_ALREADY_EXISTS", resp.Error.Code)
+}
+
+// This is the key regression test for the "different code path from Create"
+// concern: the target keeps its own current email unchanged while only its
+// username changes to a value already used by someone else. A naive
+// re-query-on-conflict guard copied verbatim from Create (which never
+// excludes the row being updated) would match the target's own unchanged
+// email against itself and misreport EMAIL_ALREADY_EXISTS instead of
+// USERNAME_ALREADY_EXISTS.
+func TestAdminUserHandler_Update_UsernameConflict_WithUnchangedEmail_ReturnsUsernameNotEmailConflict(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	existingID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		existingID.String(), "other@example.com", "otheruser", "hash", 3, true,
+	).Error)
+	targetID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		targetID.String(), "unchanged@example.com", "targetuser3", "hash", 3, true,
+	).Error)
+
+	// Same email as the target already has (unchanged), but username collides with "otheruser".
+	reqBody := map[string]interface{}{"email": "unchanged@example.com", "username": "otheruser"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("PUT", "/api/v1/users/"+targetID.String(), bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: targetID.String()}}
+
+	h.Update(c)
+
+	require.Equal(t, http.StatusConflict, w.Code)
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "USERNAME_ALREADY_EXISTS", resp.Error.Code, "must attribute the conflict to username, not the target's own unchanged email")
+}
+
+func TestAdminUserHandler_Update_UnknownID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+
+	reqBody := map[string]interface{}{"full_name": "Ghost"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	unknownID := uuid.New()
+	c.Request, _ = http.NewRequest("PUT", "/api/v1/users/"+unknownID.String(), bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: unknownID.String()}}
+
+	h.Update(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestAdminUserHandler_Delete_ThenGet_Returns404(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "del@example.com", "deluser", "hash", 3, true,
+	).Error)
+	callerID := uuid.New() // different from target, so the self-delete guard doesn't trigger
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("DELETE", "/api/v1/users/"+userID.String(), nil)
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+	c.Set("user_id", callerID.String())
+
+	h.Delete(c)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Request, _ = http.NewRequest("GET", "/api/v1/users/"+userID.String(), nil)
+	c2.Params = gin.Params{{Key: "id", Value: userID.String()}}
+
+	h.Get(c2)
+	require.Equal(t, http.StatusNotFound, w2.Code)
+}
+
+func TestAdminUserHandler_Delete_RevokesTargetUsersSessions(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	userID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID.String(), "sess@example.com", "sessuser", "hash", 3, true,
+	).Error)
+	refreshRepo := repository.NewRefreshTokenRepo(db)
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: userID, TokenHash: "tok-1", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, refreshRepo.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: userID, TokenHash: "tok-2", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	active, err := refreshRepo.ListActiveForUser(userID)
+	require.NoError(t, err)
+	require.Len(t, active, 2, "sanity check: sessions active before delete")
+
+	callerID := uuid.New()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("DELETE", "/api/v1/users/"+userID.String(), nil)
+	c.Params = gin.Params{{Key: "id", Value: userID.String()}}
+	c.Set("user_id", callerID.String())
+
+	h.Delete(c)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	active, err = refreshRepo.ListActiveForUser(userID)
+	require.NoError(t, err)
+	require.Empty(t, active, "all of the TARGET user's sessions must be revoked, not just the caller's")
+}
+
+func TestAdminUserHandler_Delete_SelfDelete_Returns403_AndDoesNotDelete(t *testing.T) {
+	h, db := setupAdminUserHandler(t)
+	adminID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		adminID.String(), "self@example.com", "selfuser", "hash", 1, true,
+	).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("DELETE", "/api/v1/users/"+adminID.String(), nil)
+	c.Params = gin.Params{{Key: "id", Value: adminID.String()}}
+	c.Set("user_id", adminID.String())
+
+	h.Delete(c)
+
+	require.Equal(t, http.StatusForbidden, w.Code)
+
+	// must still exist (not soft-deleted) after the rejected self-delete
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Request, _ = http.NewRequest("GET", "/api/v1/users/"+adminID.String(), nil)
+	c2.Params = gin.Params{{Key: "id", Value: adminID.String()}}
+
+	h.Get(c2)
+	require.Equal(t, http.StatusOK, w2.Code)
+}
+
+func TestAdminUserHandler_Delete_UnknownID_Returns404(t *testing.T) {
+	h, _ := setupAdminUserHandler(t)
+	unknownID := uuid.New()
+	callerID := uuid.New()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("DELETE", "/api/v1/users/"+unknownID.String(), nil)
+	c.Params = gin.Params{{Key: "id", Value: unknownID.String()}}
+	c.Set("user_id", callerID.String())
+
+	h.Delete(c)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
 }
