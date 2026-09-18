@@ -1,0 +1,33 @@
+package repository
+
+import (
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	"github.com/equipment-rental-system/user-service/internal/model"
+)
+
+type LoginLogRepo struct{ db *gorm.DB }
+
+func NewLoginLogRepo(db *gorm.DB) *LoginLogRepo { return &LoginLogRepo{db: db} }
+
+func (r *LoginLogRepo) Create(l *model.LoginLog) error {
+	return r.db.Create(l).Error
+}
+
+func (r *LoginLogRepo) ListForUser(userID uuid.UUID, page, limit int) ([]model.LoginLog, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	q := r.db.Model(&model.LoginLog{}).Where("user_id = ?", userID)
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var logs []model.LoginLog
+	err := q.Order("created_at desc").Offset((page - 1) * limit).Limit(limit).Find(&logs).Error
+	return logs, total, err
+}
