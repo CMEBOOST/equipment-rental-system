@@ -27,6 +27,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 
 	userSvc := service.NewUserService(userRepo, refreshRepo, cfg, logRepo)
 	userHandler := handler.NewUserHandler(userSvc)
+	adminUserHandler := handler.NewAdminUserHandler(userSvc, roleRepo, cfg.BCryptCost)
 
 	v1 := r.Group("/api/v1")
 	v1.POST("/auth/register", authHandler.Register)
@@ -38,5 +39,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1.PUT("/me/password", authMW, userHandler.ChangePassword)
 	v1.GET("/me/login-logs", authMW, userHandler.MyLoginLogs)
 	v1.GET("/me/sessions", authMW, userHandler.MySessions)
+	v1.GET("/users", authMW, middleware.RequireRole("admin"), adminUserHandler.List)
+	v1.POST("/users", authMW, middleware.RequireRole("admin"), adminUserHandler.Create)
 	return r
 }
