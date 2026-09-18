@@ -80,7 +80,7 @@ func setupUserService(t *testing.T) (*service.UserService, *model.User) {
 		RoleID:       3,
 		IsActive:     true,
 	}
-	return service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), testCfg), u
+	return service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), testCfg, repository.NewLoginLogRepo(db)), u
 }
 
 func setupUserServiceWithPassword(t *testing.T, plain string) (*service.UserService, *model.User, *gorm.DB) {
@@ -133,7 +133,7 @@ func setupUserServiceWithPassword(t *testing.T, plain string) (*service.UserServ
 	u := &model.User{ID: uuid.New(), Email: "q@example.com", Username: "q", PasswordHash: string(hash), RoleID: 3}
 	require.NoError(t, db.Create(u).Error)
 
-	return service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), testCfg), u, db
+	return service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), testCfg, repository.NewLoginLogRepo(db)), u, db
 }
 
 func TestUserService_ChangePassword_WrongCurrent_ReturnsError(t *testing.T) {

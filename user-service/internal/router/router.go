@@ -25,7 +25,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	authHandler := handler.NewAuthHandler(authSvc)
 	authMW := middleware.RequireAuth(tokenSvc)
 
-	userSvc := service.NewUserService(userRepo, refreshRepo, cfg)
+	userSvc := service.NewUserService(userRepo, refreshRepo, cfg, logRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 
 	v1 := r.Group("/api/v1")
@@ -36,5 +36,7 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1.GET("/me", authMW, userHandler.Me)
 	v1.PUT("/me", authMW, userHandler.UpdateMe)
 	v1.PUT("/me/password", authMW, userHandler.ChangePassword)
+	v1.GET("/me/login-logs", authMW, userHandler.MyLoginLogs)
+	v1.GET("/me/sessions", authMW, userHandler.MySessions)
 	return r
 }

@@ -14,10 +14,11 @@ type UserService struct {
 	users         *repository.UserRepo
 	refreshTokens *repository.RefreshTokenRepo
 	cfg           *config.Config
+	loginLogs     *repository.LoginLogRepo
 }
 
-func NewUserService(users *repository.UserRepo, refreshTokens *repository.RefreshTokenRepo, cfg *config.Config) *UserService {
-	return &UserService{users: users, refreshTokens: refreshTokens, cfg: cfg}
+func NewUserService(users *repository.UserRepo, refreshTokens *repository.RefreshTokenRepo, cfg *config.Config, loginLogs *repository.LoginLogRepo) *UserService {
+	return &UserService{users: users, refreshTokens: refreshTokens, cfg: cfg, loginLogs: loginLogs}
 }
 
 func (s *UserService) GetProfile(userID uuid.UUID) (*model.User, error) {
@@ -61,4 +62,12 @@ func (s *UserService) ChangePassword(userID uuid.UUID, req dto.ChangePasswordReq
 		return err
 	}
 	return s.refreshTokens.RevokeAllForUser(userID)
+}
+
+func (s *UserService) LoginLogsForUser(userID uuid.UUID, page, limit int) ([]model.LoginLog, int64, error) {
+	return s.loginLogs.ListForUser(userID, page, limit)
+}
+
+func (s *UserService) ActiveSessions(userID uuid.UUID) ([]model.RefreshToken, error) {
+	return s.refreshTokens.ListActiveForUser(userID)
 }

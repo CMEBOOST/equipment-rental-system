@@ -65,6 +65,19 @@ func setupUserHandler(t *testing.T) (*handler.UserHandler, *model.User, *gorm.DB
 		)
 	`).Error)
 
+	require.NoError(t, db.Exec(`
+		CREATE TABLE login_logs (
+			id INTEGER PRIMARY KEY,
+			user_id TEXT,
+			email_attempted TEXT,
+			success BOOLEAN,
+			ip_address TEXT,
+			user_agent TEXT,
+			created_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id)
+		)
+	`).Error)
+
 	require.NoError(t, db.Create(&model.Role{ID: 3, Name: "customer"}).Error)
 
 	userID := uuid.New()
@@ -84,7 +97,7 @@ func setupUserHandler(t *testing.T) (*handler.UserHandler, *model.User, *gorm.DB
 		IsActive:     true,
 	}
 
-	userSvc := service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), &config.Config{BCryptCost: 4})
+	userSvc := service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), &config.Config{BCryptCost: 4}, repository.NewLoginLogRepo(db))
 	userHandler := handler.NewUserHandler(userSvc)
 	return userHandler, u, db
 }
@@ -170,4 +183,95 @@ func TestUserHandler_UpdateMe_WithPhoneAndExtraFields(t *testing.T) {
 	require.Equal(t, "user@example.com", updated.Email)  // email NOT changed
 	require.Equal(t, "testuser", updated.Username)      // username NOT changed
 	require.Equal(t, int16(3), updated.RoleID)          // role NOT changed
+}
+
+func TestUserHandler_MySessions_OnlyActiveReturned(t *testing.T) {
+	h, u, db := setupUserHandler(t)
+
+	require.NoError(t, db.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: u.ID, TokenHash: "active", ExpiresAt: time.Now().Add(time.Hour),
+	}).Error)
+	revokedAt := time.Now()
+	require.NoError(t, db.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: u.ID, TokenHash: "revoked", ExpiresAt: time.Now().Add(time.Hour), RevokedAt: &revokedAt,
+	}).Error)
+	require.NoError(t, db.Create(&model.RefreshToken{
+		ID: uuid.New(), UserID: u.ID, TokenHash: "expired", ExpiresAt: time.Now().Add(-time.Hour),
+	}).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/me/sessions", nil)
+	c.Set("user_id", u.ID.String())
+
+	h.MySessions(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var respBody struct {
+		Success bool             `json:"success"`
+		Data    []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &respBody))
+	require.True(t, respBody.Success)
+	require.Len(t, respBody.Data, 1, "only the non-revoked, non-expired session should be returned")
+}
+
+func TestUserHandler_MySessions_Unauthenticated_Returns401(t *testing.T) {
+	h, _, _ := setupUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/me/sessions", nil)
+	// no user_id set
+
+	h.MySessions(c)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestUserHandler_MyLoginLogs_ReturnsOwnLogsOnlyWithPagination(t *testing.T) {
+	h, u, db := setupUserHandler(t)
+
+	otherID := uuid.New()
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		otherID.String(), "other@example.com", "other", "hash", 3, true,
+	).Error)
+
+	require.NoError(t, db.Create(&model.LoginLog{UserID: &u.ID, Success: true, IPAddress: "1.1.1.1"}).Error)
+	require.NoError(t, db.Create(&model.LoginLog{UserID: &u.ID, Success: false, IPAddress: "1.1.1.2"}).Error)
+	require.NoError(t, db.Create(&model.LoginLog{UserID: &otherID, Success: true, IPAddress: "9.9.9.9"}).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/me/login-logs", nil)
+	c.Set("user_id", u.ID.String())
+
+	h.MyLoginLogs(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var respBody struct {
+		Success bool             `json:"success"`
+		Data    []map[string]any `json:"data"`
+		Meta    map[string]any   `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &respBody))
+	require.True(t, respBody.Success)
+	require.Len(t, respBody.Data, 2, "should only return logs belonging to the requesting user")
+	require.Equal(t, float64(2), respBody.Meta["total"])
+	require.Equal(t, float64(1), respBody.Meta["page"])
+	require.Equal(t, float64(20), respBody.Meta["limit"])
+}
+
+func TestUserHandler_MyLoginLogs_Unauthenticated_Returns401(t *testing.T) {
+	h, _, _ := setupUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/me/login-logs", nil)
+	// no user_id set
+
+	h.MyLoginLogs(c)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
 }

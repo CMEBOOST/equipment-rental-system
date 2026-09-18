@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -90,4 +91,43 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"message": "เปลี่ยนรหัสผ่านเรียบร้อย กรุณาเข้าสู่ระบบใหม่"}})
+}
+
+func (h *UserHandler) MyLoginLogs(c *gin.Context) {
+	id, ok := currentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": gin.H{"code": "UNAUTHENTICATED", "message": "unauthenticated", "details": nil}})
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	logs, total, err := h.svc.LoginLogsForUser(id, page, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	items := make([]gin.H, 0, len(logs))
+	for _, l := range logs {
+		items = append(items, gin.H{"id": l.ID, "success": l.Success, "ip_address": l.IPAddress, "user_agent": l.UserAgent, "created_at": l.CreatedAt})
+	}
+	totalPages := (total + int64(limit) - 1) / int64(limit)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": items, "meta": gin.H{"page": page, "limit": limit, "total": total, "total_pages": totalPages}})
+}
+
+func (h *UserHandler) MySessions(c *gin.Context) {
+	id, ok := currentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": gin.H{"code": "UNAUTHENTICATED", "message": "unauthenticated", "details": nil}})
+		return
+	}
+	sessions, err := h.svc.ActiveSessions(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+		return
+	}
+	items := make([]gin.H, 0, len(sessions))
+	for _, s := range sessions {
+		items = append(items, gin.H{"id": s.ID, "ip_address": s.IPAddress, "user_agent": s.UserAgent, "created_at": s.CreatedAt, "expires_at": s.ExpiresAt})
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": items})
 }
