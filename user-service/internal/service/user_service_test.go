@@ -72,3 +72,43 @@ func TestUserService_UpdateProfile_ChangesFullNameAndPhone(t *testing.T) {
 	require.Equal(t, "New Name", updated.FullName)
 	require.Equal(t, u.Email, updated.Email) // email untouched
 }
+
+func TestUserService_UpdateProfile_UpdatesPhone(t *testing.T) {
+	svc, u := setupUserService(t)
+	newPhone := "+66812345678"
+	updated, err := svc.UpdateProfile(u.ID, dto.UpdateProfileRequest{Phone: &newPhone})
+	require.NoError(t, err)
+	require.Equal(t, newPhone, updated.Phone)
+	require.Equal(t, "Old Name", updated.FullName) // full_name untouched
+	require.Equal(t, u.Email, updated.Email)       // email untouched
+}
+
+func TestUserService_UpdateProfile_UpdatesBothFullNameAndPhone(t *testing.T) {
+	svc, u := setupUserService(t)
+	newName := "Updated Name"
+	newPhone := "+66887654321"
+	updated, err := svc.UpdateProfile(u.ID, dto.UpdateProfileRequest{FullName: &newName, Phone: &newPhone})
+	require.NoError(t, err)
+	require.Equal(t, newName, updated.FullName)
+	require.Equal(t, newPhone, updated.Phone)
+	require.Equal(t, u.Email, updated.Email) // email untouched
+}
+
+func TestUserService_UpdateProfile_IgnoresExtraFieldsInRequest(t *testing.T) {
+	svc, u := setupUserService(t)
+	newName := "New Name"
+	// Simulate request with extra fields that shouldn't be processed
+	// The UpdateProfileRequest only has FullName and Phone pointers,
+	// so any other fields in JSON won't be deserialized or applied
+	updated, err := svc.UpdateProfile(u.ID, dto.UpdateProfileRequest{
+		FullName: &newName,
+		Phone:    nil,
+		// Extra fields like Email, Username, RoleID are not in the struct
+		// so they cannot be passed - this is a compile-time guarantee
+	})
+	require.NoError(t, err)
+	require.Equal(t, newName, updated.FullName)
+	require.Equal(t, u.Email, updated.Email)       // email untouched
+	require.Equal(t, u.Username, updated.Username) // username untouched
+	require.Equal(t, u.RoleID, updated.RoleID)     // role untouched
+}
