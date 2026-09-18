@@ -263,6 +263,90 @@ func TestUserHandler_MyLoginLogs_ReturnsOwnLogsOnlyWithPagination(t *testing.T) 
 	require.Equal(t, float64(20), respBody.Meta["limit"])
 }
 
+func TestUserHandler_MyLoginLogs_LimitZero_DoesNotPanicAndDefaults(t *testing.T) {
+	h, u, db := setupUserHandler(t)
+	require.NoError(t, db.Create(&model.LoginLog{UserID: &u.ID, Success: true, IPAddress: "1.1.1.1"}).Error)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/me/login-logs?limit=0", nil)
+	c.Set("user_id", u.ID.String())
+
+	require.NotPanics(t, func() { h.MyLoginLogs(c) })
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var respBody struct {
+		Success bool           `json:"success"`
+		Meta    map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &respBody))
+	require.True(t, respBody.Success)
+	require.Equal(t, float64(20), respBody.Meta["limit"], "limit=0 should be clamped to the default of 20, matching the value actually used for the query")
+}
+
+func TestUserHandler_MyLoginLogs_LimitNonNumeric_DoesNotPanicAndDefaults(t *testing.T) {
+	h, u, _ := setupUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/me/login-logs?limit=abc", nil)
+	c.Set("user_id", u.ID.String())
+
+	require.NotPanics(t, func() { h.MyLoginLogs(c) })
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var respBody struct {
+		Success bool           `json:"success"`
+		Meta    map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &respBody))
+	require.True(t, respBody.Success)
+	require.Equal(t, float64(20), respBody.Meta["limit"], "a non-numeric limit leaves strconv.Atoi's zero value, which must be clamped like limit=0")
+}
+
+func TestUserHandler_MyLoginLogs_LimitOutOfRange_ClampsToDefault(t *testing.T) {
+	h, u, db := setupUserHandler(t)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, db.Create(&model.LoginLog{UserID: &u.ID, Success: true, IPAddress: "1.1.1.1"}).Error)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/me/login-logs?limit=500", nil)
+	c.Set("user_id", u.ID.String())
+
+	h.MyLoginLogs(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var respBody struct {
+		Success bool             `json:"success"`
+		Data    []map[string]any `json:"data"`
+		Meta    map[string]any   `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &respBody))
+	require.True(t, respBody.Success)
+	require.Equal(t, float64(20), respBody.Meta["limit"], "limit=500 is out of [1,100] and must clamp to the repo's default of 20 (CONTRACT.md §4.5), consistent with the actually-applied query limit")
+	require.Len(t, respBody.Data, 3, "all 3 logs fit within the clamped limit of 20")
+}
+
+func TestUserHandler_MyLoginLogs_PageZero_ClampsToOne(t *testing.T) {
+	h, u, _ := setupUserHandler(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/me/login-logs?page=0", nil)
+	c.Set("user_id", u.ID.String())
+
+	h.MyLoginLogs(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var respBody struct {
+		Meta map[string]any `json:"meta"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &respBody))
+	require.Equal(t, float64(1), respBody.Meta["page"])
+}
+
 func TestUserHandler_MyLoginLogs_Unauthenticated_Returns401(t *testing.T) {
 	h, _, _ := setupUserHandler(t)
 

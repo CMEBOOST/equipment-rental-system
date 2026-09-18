@@ -101,6 +101,15 @@ func (h *UserHandler) MyLoginLogs(c *gin.Context) {
 	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	// Mirror LoginLogRepo.ListForUser's own clamping (CONTRACT.md §4.5) here so the
+	// handler's meta.page/meta.limit reflect the values actually used for the query,
+	// and so totalPages below never divides by a zero or otherwise invalid limit.
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
 	logs, total, err := h.svc.LoginLogsForUser(id, page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
