@@ -82,15 +82,22 @@ func (s *AuthService) Register(req dto.RegisterRequest) (*model.User, error) {
 		IsActive:     true,
 	}
 	if err := s.users.Create(u); err != nil {
-		// TOCTOU race: when Create() fails, attempt to determine if it's due to unique constraint
-		// by re-querying for email and username. This works across all drivers (SQLite, PostgreSQL, etc.)
-		if _, checkErr := s.users.FindByEmail(req.Email); checkErr == nil {
-			return nil, ErrEmailExists
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			// TOCTOU race: Create() failed on a unique constraint violation. Re-query
+			// for email and username to determine which one was violated. This is
+			// driver-agnostic because GORM v2 normalizes unique-constraint violations
+			// to gorm.ErrDuplicatedKey across drivers (SQLite, PostgreSQL, etc.).
+			if _, checkErr := s.users.FindByEmail(req.Email); checkErr == nil {
+				return nil, ErrEmailExists
+			}
+			if _, checkErr := s.users.FindByUsername(req.Username); checkErr == nil {
+				return nil, ErrUsernameExists
+			}
+			// Practically impossible case: constraint violated but re-queries found nothing.
+			return nil, ErrConflict
 		}
-		if _, checkErr := s.users.FindByUsername(req.Username); checkErr == nil {
-			return nil, ErrUsernameExists
-		}
-		// If re-queries found nothing, it's a different kind of error - propagate it
+		// Any other Create() error (connection failure, ambiguous write, etc.) is
+		// propagated directly rather than being misreported as a duplicate via re-query.
 		return nil, err
 	}
 	u.Role = *role

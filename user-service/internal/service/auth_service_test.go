@@ -1,7 +1,9 @@
 package service_test
 
 import (
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,7 +19,10 @@ import (
 )
 
 func setupAuthServiceWithDB(t *testing.T, dsn string) (*service.AuthService, *gorm.DB) {
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	// TranslateError is required so unique-constraint violations from Create()
+	// surface as gorm.ErrDuplicatedKey (see AuthService.Register's TOCTOU guard)
+	// instead of the raw, driver-specific SQLite error.
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{TranslateError: true})
 	require.NoError(t, err)
 
 	// Create tables manually for SQLite (gen_random_uuid() is not supported)
@@ -107,9 +112,26 @@ func TestAuthService_Register_AssignsCustomerRole(t *testing.T) {
 	require.Equal(t, int16(3), u.RoleID)
 }
 
+func TestAuthService_Register_TOCTOURace_UsernameViolation(t *testing.T) {
+	svc, db := setupAuthServiceWithDB(t, ":memory:")
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, email, username, password_hash, full_name, role_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"11111111-1111-1111-1111-111111111111", "other@example.com", "raceuser", "hash", "Other", 3, true,
+	).Error)
+
+	req := dto.RegisterRequest{Email: "newperson@example.com", Username: "raceuser", Password: "Passw0rd1"}
+	_, err := svc.Register(req)
+	require.ErrorIs(t, err, service.ErrUsernameExists)
+}
+
+var registerRaceTestDBCounter atomic.Int64
+
 func TestAuthService_Register_ConcurrentSameEmail_OneSucceedsOtherGetsProperError(t *testing.T) {
-	// Use shared-cache in-memory database to allow concurrent access from goroutines
-	svc, _ := setupAuthServiceWithDB(t, "file::memory:?cache=shared")
+	// Use a DSN unique to this specific test invocation so shared-cache in-memory
+	// databases from other tests, or repeated invocations of this same test within
+	// the same process (e.g. go test -count=2), can never collide with this one.
+	dsn := fmt.Sprintf("file:register_race_test_%d?mode=memory&cache=shared", registerRaceTestDBCounter.Add(1))
+	svc, _ := setupAuthServiceWithDB(t, dsn)
 	req1 := dto.RegisterRequest{Email: "race@example.com", Username: "racer1", Password: "Passw0rd1"}
 	req2 := dto.RegisterRequest{Email: "race@example.com", Username: "racer2", Password: "Passw0rd1"}
 
