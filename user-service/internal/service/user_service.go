@@ -222,6 +222,18 @@ func (s *UserService) UpdateUser(id uuid.UUID, req dto.UpdateUserRequest) (*mode
 // from the still-stale, preloaded u.Role and silently discards a RoleID-only
 // change. Setting both fields to the new role keeps them consistent, so the
 // association save is a no-op instead of an overwrite.
+//
+// Changing a role also revokes the target's refresh tokens, matching
+// ChangePassword, ChangeStatus (on disable) and DeleteUser. The role is
+// baked into every access token as a claim, so without this a demoted admin
+// keeps admin privileges for up to the access-token TTL at any service that
+// trusts the claim instead of calling POST /auth/verify. Revoking the
+// refresh tokens forces a re-login, which mints claims with the new role.
+//
+// Like its siblings, this is two sequential writes without a transaction
+// (accepted limitation): if the revocation fails the role change has
+// already landed, which is why the handler reports that as 500 rather than
+// pretending nothing happened.
 func (s *UserService) ChangeRole(id uuid.UUID, roleName string, roles *repository.RoleRepo) (*model.User, error) {
 	u, err := s.users.FindByID(id)
 	if err != nil {
@@ -234,6 +246,9 @@ func (s *UserService) ChangeRole(id uuid.UUID, roleName string, roles *repositor
 	u.RoleID = role.ID
 	u.Role = *role
 	if err := s.users.Update(u); err != nil {
+		return nil, err
+	}
+	if err := s.refreshTokens.RevokeAllForUser(id); err != nil {
 		return nil, err
 	}
 	return u, nil

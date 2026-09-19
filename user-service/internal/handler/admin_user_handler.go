@@ -159,10 +159,19 @@ func (h *AdminUserHandler) Delete(c *gin.Context) {
 // binding:"oneof=admin staff customer" tag rejects any unrecognized role
 // name with 400 before this handler even runs, so ChangeRole's own
 // gorm.ErrRecordNotFound path only covers an unknown user ID.
+//
+// An admin may not change their own role -- the guard mirrors Delete's and
+// ChangeStatus's and runs before any DB write, so an admin cannot demote
+// themselves out of the ability to undo it. (This is deliberately not a
+// "last admin" check: that needs a count query with its own races.)
 func (h *AdminUserHandler) ChangeRole(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		respondNotFound(c)
+		return
+	}
+	if requesterID, ok := currentUserID(c); ok && requesterID == id {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": gin.H{"code": "FORBIDDEN", "message": "ไม่สามารถเปลี่ยนบทบาทของบัญชีตัวเองได้", "details": nil}})
 		return
 	}
 	var req dto.ChangeRoleRequest
