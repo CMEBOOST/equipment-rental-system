@@ -37,7 +37,7 @@ func (h *UserHandler) Me(c *gin.Context) {
 	}
 	u, err := h.svc.GetProfile(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		mapUserServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{

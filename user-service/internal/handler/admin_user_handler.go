@@ -7,7 +7,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 
 	"github.com/equipment-rental-system/user-service/internal/dto"
 	"github.com/equipment-rental-system/user-service/internal/repository"
@@ -47,7 +46,7 @@ func (h *AdminUserHandler) List(c *gin.Context) {
 		Page: page, Limit: limit, Sort: c.Query("sort"), Order: c.Query("order"),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+		respondInternalError(c, err)
 		return
 	}
 	items := make([]gin.H, 0, len(users))
@@ -77,7 +76,7 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 		case errors.Is(err, service.ErrWeakPassword):
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"success": false, "error": gin.H{"code": "WEAK_PASSWORD", "message": "รหัสผ่านไม่ตรงเกณฑ์", "details": nil}})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+			respondInternalError(c, err)
 		}
 		return
 	}
@@ -91,12 +90,12 @@ func (h *AdminUserHandler) Create(c *gin.Context) {
 func (h *AdminUserHandler) Get(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		respondNotFound(c)
 		return
 	}
 	u, err := h.svc.GetProfile(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		mapUserServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
@@ -110,7 +109,7 @@ func (h *AdminUserHandler) Get(c *gin.Context) {
 func (h *AdminUserHandler) Update(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		respondNotFound(c)
 		return
 	}
 	var req dto.UpdateUserRequest
@@ -121,14 +120,12 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 	u, err := h.svc.UpdateUser(id, req)
 	if err != nil {
 		switch {
-		case errors.Is(err, gorm.ErrRecordNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
 		case errors.Is(err, service.ErrEmailExists):
 			c.JSON(http.StatusConflict, gin.H{"success": false, "error": gin.H{"code": "EMAIL_ALREADY_EXISTS", "message": "อีเมลนี้ถูกใช้งานแล้ว", "details": nil}})
 		case errors.Is(err, service.ErrUsernameExists):
 			c.JSON(http.StatusConflict, gin.H{"success": false, "error": gin.H{"code": "USERNAME_ALREADY_EXISTS", "message": "username นี้ถูกใช้แล้ว", "details": nil}})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+			mapUserServiceError(c, err)
 		}
 		return
 	}
@@ -143,7 +140,7 @@ func (h *AdminUserHandler) Update(c *gin.Context) {
 func (h *AdminUserHandler) Delete(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		respondNotFound(c)
 		return
 	}
 	// Self-deletion check happens before any DB mutation below.
@@ -152,7 +149,7 @@ func (h *AdminUserHandler) Delete(c *gin.Context) {
 		return
 	}
 	if err := h.svc.DeleteUser(id); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		mapUserServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"message": "ลบผู้ใช้เรียบร้อย"}})
@@ -165,7 +162,7 @@ func (h *AdminUserHandler) Delete(c *gin.Context) {
 func (h *AdminUserHandler) ChangeRole(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		respondNotFound(c)
 		return
 	}
 	var req dto.ChangeRoleRequest
@@ -175,7 +172,7 @@ func (h *AdminUserHandler) ChangeRole(c *gin.Context) {
 	}
 	u, err := h.svc.ChangeRole(id, req.Role, h.roles)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		mapUserServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"id": u.ID, "role": u.Role.Name, "updated_at": u.UpdatedAt}})
@@ -188,7 +185,7 @@ func (h *AdminUserHandler) ChangeRole(c *gin.Context) {
 func (h *AdminUserHandler) ChangeStatus(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		respondNotFound(c)
 		return
 	}
 	if requesterID, ok := currentUserID(c); ok && requesterID == id {
@@ -202,7 +199,7 @@ func (h *AdminUserHandler) ChangeStatus(c *gin.Context) {
 	}
 	u, err := h.svc.ChangeStatus(id, req.IsActive)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		mapUserServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"id": u.ID, "is_active": u.IsActive, "updated_at": u.UpdatedAt}})
@@ -225,7 +222,7 @@ func (h *AdminUserHandler) ChangeStatus(c *gin.Context) {
 func (h *AdminUserHandler) LoginLogsForUser(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		respondNotFound(c)
 		return
 	}
 	// A well-formed but nonexistent (or deleted) user ID must 404, not
@@ -234,7 +231,7 @@ func (h *AdminUserHandler) LoginLogsForUser(c *gin.Context) {
 	// this explicit existence check (mirroring Get's own h.svc.GetProfile
 	// call) "no login history" and "no such user" would be indistinguishable.
 	if _, err := h.svc.GetProfile(id); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": gin.H{"code": "NOT_FOUND", "message": "ไม่พบผู้ใช้", "details": nil}})
+		mapUserServiceError(c, err)
 		return
 	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -247,7 +244,7 @@ func (h *AdminUserHandler) LoginLogsForUser(c *gin.Context) {
 	}
 	logs, total, err := h.svc.LoginLogsForUser(id, page, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
+		respondInternalError(c, err)
 		return
 	}
 	items := make([]gin.H, 0, len(logs))
