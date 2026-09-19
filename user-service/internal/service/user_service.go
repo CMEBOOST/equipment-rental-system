@@ -67,8 +67,10 @@ func (s *UserService) ChangePassword(userID uuid.UUID, req dto.ChangePasswordReq
 	return s.refreshTokens.RevokeAllForUser(userID)
 }
 
-func (s *UserService) LoginLogsForUser(userID uuid.UUID, page, limit int) ([]model.LoginLog, int64, error) {
-	return s.loginLogs.ListForUser(userID, page, limit)
+// LoginLogsForUser lists a user's login history. success is the optional
+// true/false filter (design doc §7.9/§7.17); nil returns both outcomes.
+func (s *UserService) LoginLogsForUser(userID uuid.UUID, success *bool, page, limit int) ([]model.LoginLog, int64, error) {
+	return s.loginLogs.ListForUser(userID, success, page, limit)
 }
 
 func (s *UserService) ActiveSessions(userID uuid.UUID) ([]model.RefreshToken, error) {

@@ -15,7 +15,14 @@ func (r *LoginLogRepo) Create(l *model.LoginLog) error {
 	return r.db.Create(l).Error
 }
 
-func (r *LoginLogRepo) ListForUser(userID uuid.UUID, page, limit int) ([]model.LoginLog, int64, error) {
+// ListForUser returns one page of a user's login history, newest first.
+//
+// success is the optional `success=true|false` filter from design doc
+// §7.9/§7.17: nil means "no filter" (both successful and failed attempts),
+// which is what an absent query parameter maps to. It is applied to the
+// Count as well as the Find, so meta.total describes the filtered set rather
+// than the whole history.
+func (r *LoginLogRepo) ListForUser(userID uuid.UUID, success *bool, page, limit int) ([]model.LoginLog, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -23,6 +30,9 @@ func (r *LoginLogRepo) ListForUser(userID uuid.UUID, page, limit int) ([]model.L
 		limit = 20
 	}
 	q := r.db.Model(&model.LoginLog{}).Where("user_id = ?", userID)
+	if success != nil {
+		q = q.Where("success = ?", *success)
+	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err

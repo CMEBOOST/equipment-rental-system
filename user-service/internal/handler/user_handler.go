@@ -110,7 +110,15 @@ func (h *UserHandler) MyLoginLogs(c *gin.Context) {
 	if limit < 1 || limit > 100 {
 		limit = 20
 	}
-	logs, total, err := h.svc.LoginLogsForUser(id, page, limit)
+	// Optional success=true|false filter (design doc §7.9/§7.17). An absent
+	// parameter means "both outcomes"; anything that is not true/false is a
+	// caller mistake and is rejected rather than silently reinterpreted.
+	success, ok := parseBoolQuery(c, "success")
+	if !ok {
+		respondValidationError(c, "success must be true or false")
+		return
+	}
+	logs, total, err := h.svc.LoginLogsForUser(id, success, page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error(), "details": nil}})
 		return

@@ -36,10 +36,10 @@ func (h *AdminUserHandler) List(c *gin.Context) {
 	if limit < 1 || limit > 100 {
 		limit = 20
 	}
-	var isActive *bool
-	if v := c.Query("is_active"); v != "" {
-		b := v == "true"
-		isActive = &b
+	isActive, ok := parseBoolQuery(c, "is_active")
+	if !ok {
+		respondValidationError(c, "is_active must be true or false")
+		return
 	}
 	users, total, err := h.svc.ListUsers(repository.UserFilter{
 		Query: c.Query("q"), Role: c.Query("role"), IsActive: isActive,
@@ -242,7 +242,15 @@ func (h *AdminUserHandler) LoginLogsForUser(c *gin.Context) {
 	if limit < 1 || limit > 100 {
 		limit = 20
 	}
-	logs, total, err := h.svc.LoginLogsForUser(id, page, limit)
+	// Optional success=true|false filter (design doc §7.9/§7.17). An absent
+	// parameter means "both outcomes"; anything that is not true/false is a
+	// caller mistake and is rejected rather than silently reinterpreted.
+	success, ok := parseBoolQuery(c, "success")
+	if !ok {
+		respondValidationError(c, "success must be true or false")
+		return
+	}
+	logs, total, err := h.svc.LoginLogsForUser(id, success, page, limit)
 	if err != nil {
 		respondInternalError(c, err)
 		return
