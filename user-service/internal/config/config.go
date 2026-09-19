@@ -41,6 +41,12 @@ type Config struct {
 	// CORSOrigin is the single browser origin allowed to call this service
 	// (design doc §4/§8.6). It defaults to the frontend's dev server.
 	CORSOrigin string
+	// MigrationsPath is the directory holding the .sql migration files that
+	// db.Migrate applies at startup. The default is relative, which resolves
+	// to ./migrations when running from the user-service directory; the
+	// Docker image sets MIGRATIONS_PATH=/migrations, where the Dockerfile
+	// copies them.
+	MigrationsPath string
 }
 
 // Load reads configuration from the environment (plus an optional .env file)
@@ -92,6 +98,7 @@ func Load() (*Config, error) {
 		InternalAPIKey: internalAPIKey,
 		BCryptCost:     cost,
 		CORSOrigin:     getEnv("CORS_ORIGIN", DefaultCORSOrigin),
+		MigrationsPath: getEnv("MIGRATIONS_PATH", "migrations"),
 	}, nil
 }
 

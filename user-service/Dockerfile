@@ -10,5 +10,8 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /bin/user-service /bin/user-service
 COPY --from=builder /app/migrations /migrations
+# The service applies these itself at startup (internal/db/migrate.go), so
+# the image needs no migrate binary and the stack needs no manual step.
+ENV MIGRATIONS_PATH=/migrations
 EXPOSE 8081
 ENTRYPOINT ["/bin/user-service"]
