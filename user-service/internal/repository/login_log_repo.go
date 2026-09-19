@@ -28,6 +28,11 @@ func (r *LoginLogRepo) ListForUser(userID uuid.UUID, page, limit int) ([]model.L
 		return nil, 0, err
 	}
 	var logs []model.LoginLog
-	err := q.Order("created_at desc").Offset((page - 1) * limit).Limit(limit).Find(&logs).Error
+	// id is appended as a tiebreaker for the same reason as UserRepo.List:
+	// login_logs.created_at is not unique (a failed and a successful attempt
+	// can land in the same clock tick), and without a total order paginated
+	// results are non-deterministic. id is a BIGSERIAL, so "created_at desc,
+	// id desc" is exactly reverse insertion order.
+	err := q.Order("created_at desc, id desc").Offset((page - 1) * limit).Limit(limit).Find(&logs).Error
 	return logs, total, err
 }

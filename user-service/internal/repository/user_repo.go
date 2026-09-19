@@ -95,7 +95,14 @@ func (r *UserRepo) List(f UserFilter) ([]model.User, int64, error) {
 	}
 
 	var users []model.User
-	err := q.Order(sort + " " + order).Offset((page - 1) * limit).Limit(limit).Find(&users).Error
+	// users.id is appended as a tiebreaker so the ordering is a total order.
+	// Without it, rows sharing a sort value (e.g. several users created within
+	// the same clock tick) have an unspecified relative order, which makes
+	// paginated results non-deterministic: the same row can appear on two
+	// consecutive pages, or be skipped entirely. The column is table-qualified
+	// because the role filter above joins `roles`, which also has an `id`.
+	err := q.Order(sort + " " + order + ", users.id " + order).
+		Offset((page - 1) * limit).Limit(limit).Find(&users).Error
 	return users, total, err
 }
 

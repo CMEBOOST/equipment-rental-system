@@ -2,6 +2,7 @@ package repository_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite" // pure-Go sqlite driver, no CGO needed
 	"github.com/google/uuid"
@@ -137,11 +138,16 @@ func TestUserRepo_List_DefaultsSort(t *testing.T) {
 	db := setupTestDB(t)
 	repo := repository.NewUserRepo(db)
 
-	// Create test users with different timestamps
-	user1 := &model.User{ID: uuid.New(), Email: "a@example.com", Username: "a", PasswordHash: "hash", RoleID: 3}
+	// CreatedAt is set explicitly (GORM only auto-populates it when it is the
+	// zero value) so the two rows genuinely differ in the sort column. Letting
+	// GORM stamp them made this test flaky: two Create calls in a row usually
+	// land in the same clock tick, leaving "ORDER BY created_at DESC" free to
+	// return either row first.
+	base := time.Now().Add(-time.Hour)
+	user1 := &model.User{ID: uuid.New(), Email: "a@example.com", Username: "a", PasswordHash: "hash", RoleID: 3, CreatedAt: base}
 	require.NoError(t, repo.Create(user1))
 
-	user2 := &model.User{ID: uuid.New(), Email: "b@example.com", Username: "b", PasswordHash: "hash", RoleID: 3}
+	user2 := &model.User{ID: uuid.New(), Email: "b@example.com", Username: "b", PasswordHash: "hash", RoleID: 3, CreatedAt: base.Add(time.Minute)}
 	require.NoError(t, repo.Create(user2))
 
 	// Test with empty Sort and Order (should default to created_at, desc)
