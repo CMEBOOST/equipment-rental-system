@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"time"
@@ -8,16 +10,41 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// MinJWTSecretLen is the shortest JWT signing secret this service will start
+// with. Design doc §8.1 requires at least 32 characters for the HS256 secret.
+const MinJWTSecretLen = 32
+
+// ErrMissingJWTSecret / ErrWeakJWTSecret / ErrMissingInternalAPIKey are the
+// startup-time validation failures returned by Load. They are sentinels so
+// tests (and any future callers) can assert on the specific misconfiguration
+// instead of matching error strings.
+var (
+	ErrMissingJWTSecret      = errors.New("JWT_SECRET is required")
+	ErrWeakJWTSecret         = fmt.Errorf("JWT_SECRET must be at least %d characters", MinJWTSecretLen)
+	ErrMissingInternalAPIKey = errors.New("INTERNAL_API_KEY is required")
+)
+
 type Config struct {
-	AppPort        string
+	AppPort                                    string
 	DBHost, DBPort, DBUser, DBPassword, DBName string
-	JWTSecret      string
-	JWTAccessTTL   time.Duration
-	JWTRefreshTTL  time.Duration
-	InternalAPIKey string
-	BCryptCost     int
+	JWTSecret                                  string
+	JWTAccessTTL                               time.Duration
+	JWTRefreshTTL                              time.Duration
+	InternalAPIKey                             string
+	BCryptCost                                 int
 }
 
+// Load reads configuration from the environment (plus an optional .env file)
+// and validates the security-critical secrets.
+//
+// The two secrets are validated here, at startup, rather than being left to
+// fail open at request time: an empty JWT_SECRET would make TokenService sign
+// and verify with an empty HMAC key (so anyone can forge an access token),
+// and an empty INTERNAL_API_KEY would make RequireInternalKey's comparison
+// succeed for a request that simply omits the X-Internal-Key header. Both are
+// silent, exploitable defaults, so an unconfigured deployment must refuse to
+// start instead of starting insecurely (cmd/api/main.go log.Fatalf's on any
+// error returned from here).
 func Load() (*Config, error) {
 	_ = godotenv.Load() // ignore error: absent in prod containers, present in dev
 	accessTTL, err := time.ParseDuration(getEnv("JWT_ACCESS_TTL", "15m"))
@@ -32,6 +59,17 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	jwtSecret := getEnv("JWT_SECRET", "")
+	switch {
+	case jwtSecret == "":
+		return nil, ErrMissingJWTSecret
+	case len(jwtSecret) < MinJWTSecretLen:
+		return nil, ErrWeakJWTSecret
+	}
+	internalAPIKey := getEnv("INTERNAL_API_KEY", "")
+	if internalAPIKey == "" {
+		return nil, ErrMissingInternalAPIKey
+	}
 	return &Config{
 		AppPort:        getEnv("APP_PORT", "8081"),
 		DBHost:         getEnv("DB_HOST", "localhost"),
@@ -39,10 +77,10 @@ func Load() (*Config, error) {
 		DBUser:         getEnv("DB_USER", "user_service"),
 		DBPassword:     getEnv("DB_PASSWORD", "secret"),
 		DBName:         getEnv("DB_NAME", "user_db"),
-		JWTSecret:      getEnv("JWT_SECRET", ""),
+		JWTSecret:      jwtSecret,
 		JWTAccessTTL:   accessTTL,
 		JWTRefreshTTL:  refreshTTL,
-		InternalAPIKey: getEnv("INTERNAL_API_KEY", ""),
+		InternalAPIKey: internalAPIKey,
 		BCryptCost:     cost,
 	}, nil
 }
