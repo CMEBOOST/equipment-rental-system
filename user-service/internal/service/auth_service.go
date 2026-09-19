@@ -89,13 +89,25 @@ func (s *AuthService) Register(req dto.RegisterRequest) (*model.User, error) {
 			// for email and username to determine which one was violated. This is
 			// driver-agnostic because GORM v2 normalizes unique-constraint violations
 			// to gorm.ErrDuplicatedKey across drivers (SQLite, PostgreSQL, etc.).
+			//
+			// These re-queries are deliberately *scoped* (they exclude
+			// soft-deleted rows) because the uniqueness constraints they are
+			// explaining are scoped the same way: migration 000003 replaced the
+			// unconditional UNIQUE columns with partial unique indexes over
+			// `deleted_at IS NULL`. A soft-deleted user's email therefore no
+			// longer collides at all, so there is nothing here to attribute it to.
 			if _, checkErr := s.users.FindByEmail(req.Email); checkErr == nil {
 				return nil, ErrEmailExists
 			}
 			if _, checkErr := s.users.FindByUsername(req.Username); checkErr == nil {
 				return nil, ErrUsernameExists
 			}
-			// Practically impossible case: constraint violated but re-queries found nothing.
+			// Genuinely a race: another transaction inserted the same email or
+			// username and this INSERT lost, but that row was already gone again
+			// by the time the re-queries above ran. Before migration 000003 this
+			// branch was also reachable through the ordinary delete flow (a
+			// soft-deleted row still occupied the email), which produced a bare,
+			// undiagnosable 409 CONFLICT; that path no longer exists.
 			return nil, ErrConflict
 		}
 		// Any other Create() error (connection failure, ambiguous write, etc.) is

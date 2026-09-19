@@ -38,8 +38,8 @@ func setupUserService(t *testing.T) (*service.UserService, *model.User) {
 	require.NoError(t, db.Exec(`
 		CREATE TABLE users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE,
-			username TEXT UNIQUE,
+			email TEXT,
+			username TEXT,
 			password_hash TEXT,
 			full_name TEXT,
 			phone TEXT,
@@ -51,6 +51,8 @@ func setupUserService(t *testing.T) (*service.UserService, *model.User) {
 			FOREIGN KEY (role_id) REFERENCES roles(id)
 		)
 	`).Error)
+
+	applyUserUniqueIndexes(t, db)
 
 	require.NoError(t, db.Exec(`
 		CREATE TABLE refresh_tokens (
@@ -101,8 +103,8 @@ func setupUserServiceWithPassword(t *testing.T, plain string) (*service.UserServ
 	require.NoError(t, db.Exec(`
 		CREATE TABLE users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE,
-			username TEXT UNIQUE,
+			email TEXT,
+			username TEXT,
 			password_hash TEXT,
 			full_name TEXT,
 			phone TEXT,
@@ -114,6 +116,8 @@ func setupUserServiceWithPassword(t *testing.T, plain string) (*service.UserServ
 			FOREIGN KEY (role_id) REFERENCES roles(id)
 		)
 	`).Error)
+
+	applyUserUniqueIndexes(t, db)
 
 	require.NoError(t, db.Exec(`
 		CREATE TABLE refresh_tokens (
@@ -296,8 +300,8 @@ func setupUserServiceForCreate(t *testing.T, dsn string) (*service.UserService, 
 	require.NoError(t, db.Exec(`
 		CREATE TABLE users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE,
-			username TEXT UNIQUE,
+			email TEXT,
+			username TEXT,
 			password_hash TEXT,
 			full_name TEXT,
 			phone TEXT,
@@ -309,6 +313,8 @@ func setupUserServiceForCreate(t *testing.T, dsn string) (*service.UserService, 
 			FOREIGN KEY (role_id) REFERENCES roles(id)
 		)
 	`).Error)
+
+	applyUserUniqueIndexes(t, db)
 
 	require.NoError(t, db.Exec(`
 		CREATE TABLE refresh_tokens (
@@ -511,8 +517,8 @@ func setupUserServiceForRoleStatus(t *testing.T) (*service.UserService, *reposit
 	require.NoError(t, db.Exec(`
 		CREATE TABLE users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE,
-			username TEXT UNIQUE,
+			email TEXT,
+			username TEXT,
 			password_hash TEXT,
 			full_name TEXT,
 			phone TEXT,
@@ -524,6 +530,8 @@ func setupUserServiceForRoleStatus(t *testing.T) (*service.UserService, *reposit
 			FOREIGN KEY (role_id) REFERENCES roles(id)
 		)
 	`).Error)
+
+	applyUserUniqueIndexes(t, db)
 
 	require.NoError(t, db.Exec(`
 		CREATE TABLE refresh_tokens (
@@ -663,4 +671,16 @@ func TestUserService_ListUsers_DelegatesToRepoWithFilter(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2), total)
 	require.Len(t, users, 2)
+}
+
+// applyUserUniqueIndexes mirrors migration 000003: users.email and
+// users.username are unique only among live rows (deleted_at IS NULL), not
+// unconditionally. Without this, the SQLite harness would keep the old,
+// unconditional UNIQUE columns and would not be able to reproduce (or
+// protect) the "a soft-deleted account's email must become reusable"
+// behavior that the production schema now has.
+func applyUserUniqueIndexes(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX idx_users_email_active ON users(email) WHERE deleted_at IS NULL`).Error)
+	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX idx_users_username_active ON users(username) WHERE deleted_at IS NULL`).Error)
 }

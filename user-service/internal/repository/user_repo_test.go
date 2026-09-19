@@ -29,8 +29,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.Exec(`
 		CREATE TABLE users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE,
-			username TEXT UNIQUE,
+			email TEXT,
+			username TEXT,
 			password_hash TEXT,
 			full_name TEXT,
 			phone TEXT,
@@ -42,6 +42,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			FOREIGN KEY (role_id) REFERENCES roles(id)
 		)
 	`).Error)
+
+	applyUserUniqueIndexes(t, db)
 
 	require.NoError(t, db.Exec(`
 		CREATE TABLE refresh_tokens (
@@ -226,4 +228,16 @@ func TestUserRepo_List_InvalidOrderFallsBackToDesc(t *testing.T) {
 	require.Len(t, users, 2)
 	require.Equal(t, "a@example.com", users[0].Email)
 	require.Equal(t, "b@example.com", users[1].Email)
+}
+
+// applyUserUniqueIndexes mirrors migration 000003: users.email and
+// users.username are unique only among live rows (deleted_at IS NULL), not
+// unconditionally. Without this, the SQLite harness would keep the old,
+// unconditional UNIQUE columns and would not be able to reproduce (or
+// protect) the "a soft-deleted account's email must become reusable"
+// behavior that the production schema now has.
+func applyUserUniqueIndexes(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX idx_users_email_active ON users(email) WHERE deleted_at IS NULL`).Error)
+	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX idx_users_username_active ON users(username) WHERE deleted_at IS NULL`).Error)
 }

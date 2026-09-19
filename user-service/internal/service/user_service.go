@@ -131,7 +131,10 @@ func (s *UserService) CreateUser(req dto.CreateUserRequest, roles *repository.Ro
 	if err := s.users.Create(u); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			// TOCTOU race: same guard as AuthService.Register — re-query to
-			// determine which unique constraint was actually violated.
+			// determine which unique constraint was actually violated. The
+			// re-queries stay scoped to live rows because migration 000003 made
+			// the underlying unique indexes partial (`WHERE deleted_at IS NULL`),
+			// so a soft-deleted user no longer occupies an email or username.
 			if _, checkErr := s.users.FindByEmail(req.Email); checkErr == nil {
 				return nil, ErrEmailExists
 			}
@@ -196,8 +199,9 @@ func (s *UserService) UpdateUser(id uuid.UUID, req dto.UpdateUserRequest) (*mode
 					return nil, ErrUsernameExists
 				}
 			}
-			// Practically impossible case: constraint violated but re-queries
-			// (excluding the target itself) found no other owner.
+			// Genuinely a race: the row that caused the violation was gone
+			// again (or soft-deleted, which migration 000003's partial unique
+			// indexes exclude) by the time the re-queries above ran.
 			return nil, ErrConflict
 		}
 		return nil, err

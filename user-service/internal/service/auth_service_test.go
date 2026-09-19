@@ -37,8 +37,8 @@ func setupAuthServiceWithDB(t *testing.T, dsn string) (*service.AuthService, *go
 	require.NoError(t, db.Exec(`
 		CREATE TABLE users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE,
-			username TEXT UNIQUE,
+			email TEXT,
+			username TEXT,
 			password_hash TEXT,
 			full_name TEXT,
 			phone TEXT,
@@ -50,6 +50,8 @@ func setupAuthServiceWithDB(t *testing.T, dsn string) (*service.AuthService, *go
 			FOREIGN KEY (role_id) REFERENCES roles(id)
 		)
 	`).Error)
+
+	applyUserUniqueIndexes(t, db)
 
 	require.NoError(t, db.Exec(`
 		CREATE TABLE refresh_tokens (
