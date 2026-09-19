@@ -14,6 +14,12 @@ import (
 // with. Design doc §8.1 requires at least 32 characters for the HS256 secret.
 const MinJWTSecretLen = 32
 
+// DefaultCORSOrigin is used when CORS_ORIGIN is not set: the origin the
+// project's React frontend runs on in development. It is defined here rather
+// than in the middleware package because config must not import middleware
+// (middleware -> service -> config would be an import cycle).
+const DefaultCORSOrigin = "http://localhost:3000"
+
 // ErrMissingJWTSecret / ErrWeakJWTSecret / ErrMissingInternalAPIKey are the
 // startup-time validation failures returned by Load. They are sentinels so
 // tests (and any future callers) can assert on the specific misconfiguration
@@ -32,6 +38,9 @@ type Config struct {
 	JWTRefreshTTL                              time.Duration
 	InternalAPIKey                             string
 	BCryptCost                                 int
+	// CORSOrigin is the single browser origin allowed to call this service
+	// (design doc §4/§8.6). It defaults to the frontend's dev server.
+	CORSOrigin string
 }
 
 // Load reads configuration from the environment (plus an optional .env file)
@@ -82,6 +91,7 @@ func Load() (*Config, error) {
 		JWTRefreshTTL:  refreshTTL,
 		InternalAPIKey: internalAPIKey,
 		BCryptCost:     cost,
+		CORSOrigin:     getEnv("CORS_ORIGIN", DefaultCORSOrigin),
 	}, nil
 }
 

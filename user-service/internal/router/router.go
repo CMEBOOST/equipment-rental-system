@@ -13,7 +13,11 @@ import (
 
 func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery())
+	// Design doc §4/§8.6: request logging, panic recovery and CORS. Logger
+	// runs first so a request that later panics is still logged; CORS runs
+	// before routing so preflight OPTIONS requests (which match no route) are
+	// answered by the middleware chain rather than falling through to 404.
+	r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(cfg.CORSOrigin))
 	r.GET("/health", handler.Health(database))
 
 	userRepo := repository.NewUserRepo(database)
