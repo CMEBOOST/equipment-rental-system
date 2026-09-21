@@ -76,28 +76,28 @@ Base path ทุกอันคือ `/api/v1` ยกเว้น `/health` —
 Kong (`localhost:8000`) ก็ได้ (ดู [../deploy/kong/README.md](../deploy/kong/README.md))
 คอลัมน์ "สิทธิ์" ว่าง = public ไม่ต้องมี token
 
-| Method | Path | สิทธิ์ | หมายเหตุ |
-| --- | --- | --- | --- |
-| GET | `/health` | — | เช็ค DB connection ด้วย |
-| POST | `/auth/register` | — | body: `email`, `username`, `password` (≥8 ตัว มีทั้งตัวอักษร+เลข), `full_name`, `phone` (2 ตัวหลังไม่บังคับ) |
-| POST | `/auth/login` | — | body: `email`, `password` → คืน `access_token` (15 นาที) + `refresh_token` (opaque, 7 วัน) |
-| POST | `/auth/refresh` | — | body: `refresh_token` → ออก access token ใหม่, หมุน refresh token ใหม่ |
-| POST | `/auth/logout` | token | body: `refresh_token` → revoke session นั้น |
-| POST | `/auth/verify` | `X-Internal-Key` header | สำหรับ service อื่นเรียก ไม่ใช่ client — body: `token` → คืน active/user_id/email/username/role/expires_at |
-| GET | `/me` | token | ข้อมูลตัวเอง |
-| PUT | `/me` | token | แก้ `full_name`/`phone` |
-| PUT | `/me/password` | token | body: `old_password`, `new_password` → revoke session อื่นทั้งหมด |
-| GET | `/me/login-logs` | token | ประวัติ login ตัวเอง — query: `page`, `limit` (default 1/20) |
-| GET | `/me/sessions` | token | refresh token ที่ยัง active อยู่ |
-| GET | `/users` | admin | รายชื่อผู้ใช้ทั้งหมด — query: `q`, `role`, `is_active`, `sort`, `order`, `page`, `limit` |
-| POST | `/users` | admin | สร้างผู้ใช้ใหม่โดย admin (กำหนด role ได้ทันที) |
-| GET | `/users/:id` | admin, staff | ดูผู้ใช้คนเดียว |
-| PUT | `/users/:id` | admin | แก้ข้อมูลผู้ใช้คนอื่น |
-| DELETE | `/users/:id` | admin | soft delete (email/username เอาไปสมัครใหม่ได้ทันที) |
-| PATCH | `/users/:id/role` | admin | เปลี่ยน role — revoke session เดิม, ห้าม demote ตัวเอง |
-| PATCH | `/users/:id/status` | admin | เปิด/ปิดบัญชี (`is_active`) |
-| GET | `/users/:id/login-logs` | admin | ประวัติ login ของคนอื่น — query: `success` (true/false), `page`, `limit` |
-| GET | `/roles` | admin, staff | รายชื่อ role ทั้งหมด (admin/staff/customer) |
+| Method | Path | สิทธิ์ | Body | หมายเหตุ |
+| --- | --- | --- | --- | --- |
+| GET | `/health` | — | — | เช็ค DB connection ด้วย |
+| POST | `/auth/register` | — | `{"email","username","password","full_name","phone"}` | `password` ≥8 ตัว มีทั้งตัวอักษร+เลข, `full_name`/`phone` ไม่บังคับ |
+| POST | `/auth/login` | — | `{"email","password"}` | คืน `access_token` (15 นาที) + `refresh_token` (opaque, 7 วัน) |
+| POST | `/auth/refresh` | — | `{"refresh_token"}` | ออก access token ใหม่, หมุน refresh token ใหม่ |
+| POST | `/auth/logout` | token | `{"refresh_token"}` | revoke session นั้น |
+| POST | `/auth/verify` | `X-Internal-Key` header | `{"token"}` | สำหรับ service อื่นเรียก ไม่ใช่ client — คืน `{active,user_id,email,username,role,expires_at}` |
+| GET | `/me` | token | — | ข้อมูลตัวเอง |
+| PUT | `/me` | token | `{"full_name","phone"}` | ทั้งสอง field ไม่บังคับ ส่งเฉพาะที่จะแก้ก็ได้ |
+| PUT | `/me/password` | token | `{"current_password","new_password"}` | `new_password` ≥8 ตัว — revoke session อื่นทั้งหมด |
+| GET | `/me/login-logs` | token | — | ประวัติ login ตัวเอง — query: `page`, `limit` (default 1/20) |
+| GET | `/me/sessions` | token | — | refresh token ที่ยัง active อยู่ |
+| GET | `/users` | admin | — | query: `q`, `role`, `is_active`, `sort`, `order`, `page`, `limit` |
+| POST | `/users` | admin | `{"email","username","password","full_name","phone","role","is_active"}` | `role` ต้องเป็น `admin`/`staff`/`customer`, `is_active` ไม่บังคับ (default true) |
+| GET | `/users/:id` | admin, staff | — | ดูผู้ใช้คนเดียว |
+| PUT | `/users/:id` | admin | `{"email","username","full_name","phone"}` | ทุก field ไม่บังคับ ส่งเฉพาะที่จะแก้ |
+| DELETE | `/users/:id` | admin | — | soft delete (email/username เอาไปสมัครใหม่ได้ทันที) |
+| PATCH | `/users/:id/role` | admin | `{"role"}` | `admin`/`staff`/`customer` — revoke session เดิม, ห้าม demote ตัวเอง |
+| PATCH | `/users/:id/status` | admin | `{"is_active"}` | เปิด/ปิดบัญชี |
+| GET | `/users/:id/login-logs` | admin | — | query: `success` (true/false), `page`, `limit` |
+| GET | `/roles` | admin, staff | — | รายชื่อ role ทั้งหมด (admin/staff/customer) |
 
 ทุก response ใช้ envelope เดียวกัน: `{"success":true,"data":...}` หรือ
 `{"success":false,"error":{"code":...,"message":...,"details":...}}` — รายการที่มี
