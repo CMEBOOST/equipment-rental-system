@@ -24,9 +24,34 @@ curl http://localhost:8081/health
 **ไม่ต้องรัน migration เอง** — service จะรัน migration ทั้งหมดใน `migrations/`
 ให้อัตโนมัติตอน start (ดู `internal/db/migrate.go` ซึ่งถูกเรียกจาก
 `cmd/api/main.go` ก่อนเปิด HTTP server) ดังนั้น `docker compose up` บน volume
-เปล่าก็ใช้งานได้ทันที ตาราง + role seed (admin/staff/customer) พร้อมใช้
+เปล่าก็ใช้งานได้ทันที ตาราง + role seed (admin/staff/customer) + บัญชี admin/staff
+เริ่มต้นพร้อมใช้ (ดูหัวข้อถัดไป)
 
-ลองสมัครและเข้าสู่ระบบ:
+## บัญชี admin/staff เริ่มต้น (seed มาให้แล้ว)
+
+`POST /auth/register` ตั้ง role เป็น `customer` เสมอ ไม่มีทางเลือก — ถ้าไม่ seed
+account ไว้ก่อน จะไม่มีทางสร้าง admin คนแรกได้เลย (endpoint ที่ตั้ง role อื่นได้ต้องเป็น
+admin ก่อนถึงจะเรียกได้) migration `000004_seed_admin_staff.up.sql` เลยสร้างให้ 2 บัญชีนี้
+ไว้ตั้งแต่ตอน migrate:
+
+| Role | Email | Username | Password |
+|---|---|---|---|
+| admin | `admin@equipment-rental.local` | `admin` | `Admin123!` |
+| staff | `staff@equipment-rental.local` | `staff` | `Staff123!` |
+
+```bash
+curl -X POST http://localhost:8081/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@equipment-rental.local","password":"Admin123!"}'
+```
+
+เอา `access_token` ที่ได้ไปใช้เรียก endpoint ที่ต้อง role admin (เช่น `GET /users`,
+`PATCH /users/:id/role`) ตั้ง admin/staff คนอื่นเพิ่มผ่าน API ได้ตามปกติจากจุดนี้
+
+> ⚠️ **รหัสผ่านนี้เป็นค่า dev เท่านั้น** ใครก็อ่านไฟล์นี้ได้ก็รู้รหัสผ่าน admin — ห้ามใช้ค่านี้
+> จริงถ้าเอาไป deploy จริง (เปลี่ยนรหัสผ่านผ่าน `PUT /me/password` ทันทีหลัง deploy)
+
+ลองสมัครและเข้าสู่ระบบ (บัญชีปกติ จะได้ role `customer`):
 
 ```bash
 curl -X POST http://localhost:8081/api/v1/auth/register \
