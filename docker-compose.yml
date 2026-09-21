@@ -1,0 +1,51 @@
+# docker-compose.yml (repo root)
+version: "3.9"
+
+services:
+  user-service:
+    build: ./user-service
+    container_name: user-service
+    ports: ["8081:8081"]
+    env_file: [./.env]
+    # The root .env(.example) namespaces per-service DB/port settings with a
+    # USER_/PRODUCT_/RENTAL_ prefix (e.g. USER_DB_HOST) so all three services
+    # can share one root .env file without colliding. user-service's own
+    # config.Load() (internal/config/config.go) reads the unprefixed names
+    # (APP_PORT, DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME) per
+    # CONTRACT.md §2/§9.2. This mapping bridges the two so the container gets
+    # the names it actually expects. JWT_*/INTERNAL_API_KEY/BCRYPT_COST are
+    # already unprefixed/shared in .env and pass through via env_file above.
+    environment:
+      APP_PORT: ${USER_APP_PORT}
+      DB_HOST: ${USER_DB_HOST}
+      DB_PORT: ${USER_DB_PORT}
+      DB_USER: ${USER_DB_USER}
+      DB_PASSWORD: ${USER_DB_PASSWORD}
+      DB_NAME: ${USER_DB_NAME}
+    depends_on:
+      user-db:
+        condition: service_healthy
+    networks: [rental-net]
+
+  user-db:
+    image: postgres:16-alpine
+    container_name: user-db
+    environment:
+      POSTGRES_USER: ${USER_DB_USER}
+      POSTGRES_PASSWORD: ${USER_DB_PASSWORD}
+      POSTGRES_DB: ${USER_DB_NAME}
+    volumes: ["user-db-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${USER_DB_USER} -d ${USER_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks: [rental-net]
+
+volumes:
+  user-db-data:
+
+networks:
+  rental-net:
+    name: rental-net
+    driver: bridge

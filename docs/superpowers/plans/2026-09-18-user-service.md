@@ -581,10 +581,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 
 	"github.com/equipment-rental-system/user-service/internal/model"
 )
@@ -620,7 +620,7 @@ func (s *TokenService) GenerateAccessToken(u model.User) (string, int, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.accessTTL)),
-			ID:        uuidNew(),
+			ID:        uuid.New().String(),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -653,14 +653,6 @@ func NewOpaqueRefreshToken() (string, error) {
 func HashRefreshToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
-}
-
-func uuidNew() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 ```
 
@@ -697,7 +689,7 @@ git commit -m "feat(user-service): add JWT token service with iss claim and opaq
 - [ ] **Step 1: Add test dependency and write failing test**
 
 ```bash
-go get gorm.io/driver/sqlite
+go get github.com/glebarez/sqlite
 ```
 
 ```go
@@ -1076,6 +1068,7 @@ package service
 import (
 	"errors"
 	"regexp"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -1341,18 +1334,13 @@ func (s *AuthService) Login(req dto.LoginRequest, ip, userAgent string) (string,
 	}
 	if err := s.refreshTokens.Create(&model.RefreshToken{
 		UserID: u.ID, TokenHash: HashRefreshToken(rawRefresh),
-		ExpiresAt: timeNowAdd(s.cfg.JWTRefreshTTL), IPAddress: ip, UserAgent: userAgent,
+		ExpiresAt: time.Now().Add(s.cfg.JWTRefreshTTL), IPAddress: ip, UserAgent: userAgent,
 	}); err != nil {
 		return "", "", 0, nil, err
 	}
 	logSuccess = true
 	return access, rawRefresh, expiresIn, u, nil
 }
-```
-
-```go
-// append to user-service/internal/service/token_service.go (small time helper kept alongside token logic)
-func timeNowAdd(d time.Duration) time.Time { return time.Now().Add(d) }
 ```
 
 Add `Login` handler:
@@ -1464,7 +1452,7 @@ var ErrInvalidRefreshToken = errors.New("invalid or expired refresh token")
 func (s *AuthService) Refresh(rawToken string) (string, string, int, error) {
 	hash := HashRefreshToken(rawToken)
 	rt, err := s.refreshTokens.FindByHash(hash)
-	if err != nil || rt.RevokedAt != nil || rt.ExpiresAt.Before(timeNow()) {
+	if err != nil || rt.RevokedAt != nil || rt.ExpiresAt.Before(time.Now()) {
 		return "", "", 0, ErrInvalidRefreshToken
 	}
 	u, err := s.users.FindByID(rt.UserID)
@@ -1486,7 +1474,7 @@ func (s *AuthService) Refresh(rawToken string) (string, string, int, error) {
 		return "", "", 0, err
 	}
 	if err := s.refreshTokens.Create(&model.RefreshToken{
-		UserID: u.ID, TokenHash: HashRefreshToken(newRaw), ExpiresAt: timeNowAdd(s.cfg.JWTRefreshTTL),
+		UserID: u.ID, TokenHash: HashRefreshToken(newRaw), ExpiresAt: time.Now().Add(s.cfg.JWTRefreshTTL),
 	}); err != nil {
 		return "", "", 0, err
 	}
@@ -1496,13 +1484,6 @@ func (s *AuthService) Refresh(rawToken string) (string, string, int, error) {
 func (s *AuthService) Logout(rawToken string) error {
 	return s.refreshTokens.RevokeByHash(HashRefreshToken(rawToken))
 }
-
-func timeNow() timeType { return timeType(timeNowAdd(0)) }
-```
-
-```go
-// user-service/internal/service/token_service.go — add alias so auth_service.go compiles without importing "time" directly twice
-type timeType = time.Time
 ```
 
 Add handlers:
@@ -2132,7 +2113,7 @@ func setupHandlerWithUser(t *testing.T) (*gin.Engine, *model.User, *gorm.DB) {
 	u := &model.User{Email: "s@example.com", Username: "s", PasswordHash: "x", RoleID: 3}
 	require.NoError(t, db.Create(u).Error)
 
-	uh := handler.NewUserHandler(service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db)))
+	uh := handler.NewUserHandler(service.NewUserService(repository.NewUserRepo(db), repository.NewRefreshTokenRepo(db), repository.NewLoginLogRepo(db)))
 	r := gin.New()
 	r.GET("/sessions", func(c *gin.Context) { c.Set("user_id", u.ID.String()); c.Next() }, uh.MySessions)
 	return r, u, db
@@ -2221,7 +2202,13 @@ func (s *UserService) ActiveSessions(userID uuid.UUID) ([]model.RefreshToken, er
 }
 ```
 
-Add `loginLogs *repository.LoginLogRepo` field to `UserService` struct and constructor (third parameter), and update the one call site in `router.go` to pass `logRepo` as well: `service.NewUserService(userRepo, refreshRepo, logRepo)`.
+Add `loginLogs *repository.LoginLogRepo` field to `UserService` struct and constructor.
+
+**Note on current constructor arity (post-Task-10 fix loop):** `NewUserService` is currently `(users *repository.UserRepo, refreshTokens *repository.RefreshTokenRepo, cfg *config.Config)` — 3 args — because Task 10's review found the original 2-arg plan didn't source bcrypt cost from config, and the fix added `cfg` as the third constructor parameter (replacing the plan's original "pass cost as a method arg" approach) rather than as a fourth. Add `loginLogs` as the **fourth** parameter: `NewUserService(users, refreshTokens, cfg, loginLogs)`. Update **every** existing call site to pass this fourth `*repository.LoginLogRepo` argument:
+- `router.go`: `service.NewUserService(userRepo, refreshRepo, cfg, logRepo)`
+- Every test helper in `user_service_test.go` and `user_handler_test.go` that currently calls `service.NewUserService(...)` with 3 args (search for all call sites — there are several across both test files by this point) — each needs a `*repository.LoginLogRepo` built on the same in-memory db appended as the fourth argument (the test DB already has `model.LoginLog` migrated in every existing helper).
+
+Run `go build ./...` after this task's changes and confirm no call site still uses a stale (1, 2, or 3-arg) form.
 
 ```go
 // user-service/internal/router/router.go — add
@@ -3100,7 +3087,7 @@ func RequireInternalKey(expected string) gin.HandlerFunc {
 
 ```go
 // append to user-service/internal/service/auth_service.go
-import "time" // add to import block
+// "time" is already imported (added in Task 5) — no import change needed here
 
 func (s *AuthService) VerifyToken(rawToken string) (*model.User, time.Time, error) {
 	claims, err := s.tokens.ParseAccessToken(rawToken)
@@ -3124,7 +3111,7 @@ func (s *AuthService) VerifyToken(rawToken string) (*model.User, time.Time, erro
 
 ```go
 // user-service/internal/service/token_service.go — add helper used above
-import "github.com/google/uuid" // add to import block
+// "github.com/google/uuid" is already imported (added in Task 3) — no import change needed here
 
 func uuidParse(s string) (uuid.UUID, error) { return uuid.Parse(s) }
 ```
