@@ -38,9 +38,13 @@
 
 | Service | ชื่อใน docker-compose | พอร์ต (host:container) | Base path |
 |---|---|---|---|
+| **Kong (gateway)** | `kong` | `8000:8000` | — (proxy หน้าทั้ง 3 service) |
 | User Management | `user-service` | `8081:8081` | `/api/v1` |
 | Product | `product-service` | `8082:8082` | `/api/v1` |
 | Rental | `rental-service` | `8083:8083` | `/api/v1` |
+
+> **Client เรียกผ่าน Kong (`:8000`) เท่านั้นสำหรับ flow ปกติ** ตั้งแต่นี้ไป พอร์ต `8081`-`8083`
+> ยังเปิด map ไว้เพื่อ debug/health check ตรงเท่านั้น ไม่ใช่ทางที่ client ควรใช้อีกต่อไป
 
 ฐานข้อมูล (คอนเทนเนอร์แยกต่อ service)
 
@@ -184,23 +188,28 @@
   "email": "somchai@example.com",
   "username": "somchai",
   "role": "customer",
+  "iss": "equipment-rental-system",
   "iat": 1757148000,
   "exp": 1757148900,
   "jti": "<uuid>"
 }
 ```
 
+`iss` เป็นค่าคงที่เดียวกันทุก token (ไม่ผูกกับ user) — Kong's `jwt` plugin ใช้ค่านี้จับคู่กับ
+credential ที่ตั้งไว้ใน `deploy/kong/kong.yml` เพื่อเลือก secret มาตรวจลายเซ็น
+
 ### 5.3 product-service / rental-service ตรวจ token อย่างไร
 
-**ค่าเริ่มต้น — ตรวจเอง (ไม่ต้องเรียกข้าม service):**
+**Kong ตรวจ signature/expiry ให้แล้วก่อน request จะมาถึง service** (ผ่าน `jwt` plugin บน route
+ที่ต้อง login ใน `deploy/kong/kong.yml`) ดังนั้น `product-service` และ `rental-service`:
 
-1. อ่าน header `Authorization: Bearer <token>`
-2. ตรวจลายเซ็นด้วย `JWT_SECRET` และอัลกอริทึม `HS256`
-3. ตรวจ `exp` ยังไม่หมดอายุ
-4. อ่าน `sub` (user id) และ `role` ไปใช้บังคับสิทธิ์
-5. ไม่มี token / ผิด → ตอบ `401 UNAUTHENTICATED`
+1. **ไม่ต้องถือ `JWT_SECRET`** และ**ไม่ต้อง verify signature เอง**
+2. อ่าน header `Authorization: Bearer <token>` (Kong forward ให้โดยไม่ตัดออก)
+3. Decode ส่วน payload (base64) อ่าน claims `sub` / `role` / `email` ไปใช้บังคับสิทธิ์ — ไม่ต้อง verify signature ซ้ำ
+4. เรียกตรงพอร์ต 8082/8083 (ข้าม Kong) จะไม่มีใครเช็ค signature — ต้องทดสอบ reject flow ผ่าน Kong (`:8000`) เท่านั้น
 
-**กรณีต้องมั่นใจว่าบัญชียัง active / ไม่ถูกแบน** — เรียก introspection ของ user-service:
+**กรณีต้องมั่นใจว่าบัญชียัง active / ไม่ถูกแบน** — เรียก introspection ของ user-service เหมือนเดิม
+(ไม่เปลี่ยน จาก Kong ไม่ทำ RBAC หรือเช็ค active/ban):
 
 ```
 POST http://user-service:8081/api/v1/auth/verify
@@ -211,7 +220,8 @@ Body:   { "token": "<access token>" }
 ตอบ `200` พร้อม `{ active, user_id, email, username, role, expires_at }`
 หรือ `401` ถ้า token ใช้ไม่ได้
 
-> แนะนำ: ใช้วิธี "ตรวจเอง" เป็นหลัก เรียก `/auth/verify` เฉพาะ action สำคัญ (เช่น ยืนยันการเช่า) เพื่อลด network call
+> แนะนำ: ใช้ claims ที่ decode จาก Kong เป็นหลัก เรียก `/auth/verify` เฉพาะ action สำคัญ
+> (เช่น ยืนยันการเช่า) เพื่อลด network call — endpoint นี้เรียกตรงข้าม container เหมือนเดิม ไม่ผ่าน Kong
 
 ### 5.4 Refresh token
 
@@ -270,6 +280,10 @@ product-service ──► rental-service   : (option) เช็คว่าส�
 ```
 
 > ทางเลือกที่ง่ายกว่าการให้ product เรียก rental: ให้ **rental-service เป็นคนอัปเดตสถานะ** โดยเรียก `PATCH /products/{id}/status` ของ product-service ตอนเช่า/คืน — ทีมเลือกแนวทางนี้ร่วมกัน
+
+> **Kong ไม่เกี่ยวกับ diagram ข้างบนนี้เลย** — ทุกลูกศรใน 7.1 (`rental→product`, `rental→user`,
+> `product→rental`) ยังเรียกตรงข้าม container name เหมือนเดิม ไม่ผ่าน Kong (`:8000`) Kong เป็นแค่
+> ทางเข้าสำหรับ **client** เท่านั้น
 
 ### 7.2 กติกาการเรียกข้าม service
 
@@ -433,6 +447,25 @@ services:
       retries: 5
     networks: [rental-net]
 
+  kong:
+    image: kong:3.6
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+    volumes:
+      - ./deploy/kong/kong.yml:/kong/kong.yml:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - user-service
+      - product-service
+      - rental-service
+    networks: [rental-net]
+
 volumes:
   user-db-data:
   product-db-data:
@@ -444,15 +477,21 @@ networks:
     driver: bridge
 ```
 
+> **สถานะปัจจุบัน (2026-09-21):** `product-service`/`rental-service` ยังไม่มีโค้ด ใน
+> docker-compose.yml จริงตอนนี้ `kong.depends_on` จึงมีแค่ `user-service` — คนที่เพิ่ม
+> product-service/rental-service เข้า compose ทีหลัง ต้องเพิ่มชื่อ service นั้นเข้า
+> `kong.depends_on` ด้วย
+
 ### 9.3 คำสั่งรันทั้งระบบ
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
 docker compose ps          # เช็คว่าทุกตัว healthy
-curl http://localhost:8081/health
-curl http://localhost:8082/health
-curl http://localhost:8083/health
+curl http://localhost:8081/health   # ตรง — debug เท่านั้น
+curl http://localhost:8082/health   # ตรง — debug เท่านั้น
+curl http://localhost:8083/health   # ตรง — debug เท่านั้น
+curl http://localhost:8000/api/v1/products   # ผ่าน Kong — ทางที่ client ควรใช้
 ```
 
 ### 9.4 พัฒนาแยกเครื่อง
@@ -461,6 +500,8 @@ curl http://localhost:8083/health
 - user-service ไม่พึ่งใคร รันได้เลย
 - product / rental ต้องการ JWT ทดสอบ → โคลน user-service มารัน หรือขอ test token จากสุรเชษฐ์
 - นัด integrate รวม (ทั้ง 3 service) อย่างน้อยสัปดาห์ละ 1 ครั้ง
+- ทดสอบว่า token ปลอม/หมดอายุถูก reject จริง ต้องยิงผ่าน Kong (`:8000`) เท่านั้น — solo dev ที่ทดสอบ
+  business logic ปกติไม่ต้องผ่าน Kong ก็ได้ (ยิง mock claims ตรง port service ได้เลย)
 
 ---
 
@@ -518,6 +559,7 @@ equipment-rental-system/
 | เวอร์ชัน | วันที่ | การเปลี่ยนแปลง | โดย |
 |---|---|---|---|
 | v1 (ร่าง) | 2026-09-06 | ร่างฉบับแรก | สุรเชษฐ์ |
+| v2 | 2026-09-21 | เพิ่ม Kong API Gateway เป็น single entry point, ย้าย JWT verify ไป gateway | สุรเชษฐ์ |
 
 ---
 
@@ -527,6 +569,7 @@ equipment-rental-system/
 - [ ] ค่า `JWT_SECRET` / `INTERNAL_API_KEY` ร่วมกัน (ข้อ 2)
 - [ ] รูปแบบ response envelope + รหัส error (ข้อ 4)
 - [ ] วิธีตรวจ JWT ของ product/rental — ตรวจเอง vs เรียก `/auth/verify` (ข้อ 5.3)
+- [ ] ยืนยันการใช้ Kong เป็น entry point + ย้าย JWT verify ไป gateway (ข้อ 1, 5.2, 5.3, 9.2)
 - [ ] ตารางสิทธิ์ RBAC (ข้อ 6.2)
 - [ ] ใครอัปเดตสถานะสินค้าตอนเช่า/คืน — product หรือ rental (ข้อ 7.1)
 - [ ] เอกพลเติม endpoint product-service (ข้อ 8.2)
