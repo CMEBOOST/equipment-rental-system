@@ -37,9 +37,6 @@ services:
   - name: product-service
     url: http://product-service:8082
     routes:
-      - name: product-public
-        paths: ["/health"]
-        strip_path: false
       - name: product-protected
         paths:
           - /api/v1/products
@@ -51,9 +48,6 @@ services:
   - name: rental-service
     url: http://rental-service:8083
     routes:
-      - name: rental-public
-        paths: ["/health"]
-        strip_path: false
       - name: rental-protected
         paths:
           - /api/v1/rentals
