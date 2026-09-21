@@ -33,9 +33,16 @@ services:
         strip_path: false
         plugins:
           - name: jwt
+            config:
+              claims_to_verify: ["exp"]
+              run_on_preflight: false
 
   - name: product-service
     url: http://product-service:8082
+    # No public /health route here on purpose: a shared literal "/health" path
+    # collided across user/product/rental (Kong resolved it to user-service,
+    # breaking this service's health check) — see CONTRACT.md §9.2 note. If this
+    # service needs one, give it a distinct path, e.g. /product/health.
     routes:
       - name: product-protected
         paths:
@@ -44,9 +51,16 @@ services:
         strip_path: false
         plugins:
           - name: jwt
+            config:
+              claims_to_verify: ["exp"]
+              run_on_preflight: false
 
   - name: rental-service
     url: http://rental-service:8083
+    # No public /health route here on purpose: a shared literal "/health" path
+    # collided across user/product/rental (Kong resolved it to user-service,
+    # breaking this service's health check) — see CONTRACT.md §9.2 note. If this
+    # service needs one, give it a distinct path, e.g. /rental/health.
     routes:
       - name: rental-protected
         paths:
@@ -55,3 +69,6 @@ services:
         strip_path: false
         plugins:
           - name: jwt
+            config:
+              claims_to_verify: ["exp"]
+              run_on_preflight: false

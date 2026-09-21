@@ -71,6 +71,13 @@
 | `INTERNAL_API_KEY` | `dev-internal-key` | คีย์เรียก endpoint ภายใน (`/auth/verify`) |
 | `TZ` | `Asia/Bangkok` | timezone ของคอนเทนเนอร์ |
 
+> **Kong เก็บ `JWT_SECRET` อีกชุดแยกไว้ต่างหาก** ใน `deploy/kong/kong.yml`
+> (`consumers[0].jwt_secrets[0].secret`) — ไฟล์นี้ไม่ได้อ่านค่าจาก `.env` เพราะเป็น
+> declarative config ของ Kong เอง ถ้าจะหมุน (rotate) `JWT_SECRET` ต้องแก้ **ทั้งสอง
+> ที่** ให้ตรงกันแบบ byte-for-byte แล้ว restart container `kong` ด้วย
+> (`docker compose up -d --force-recreate kong`) ไม่งั้น route ที่ต้อง login จะ
+> 401 แบบเงียบๆ โดยไม่มี error บอกสาเหตุ
+
 ค่าเฉพาะ service (แต่ละคนตั้งเอง): `APP_PORT`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`
 
 ---
@@ -481,6 +488,12 @@ networks:
 > docker-compose.yml จริงตอนนี้ `kong.depends_on` จึงมีแค่ `user-service` — คนที่เพิ่ม
 > product-service/rental-service เข้า compose ทีหลัง ต้องเพิ่มชื่อ service นั้นเข้า
 > `kong.depends_on` ด้วย
+>
+> คนที่เพิ่ม `product-service`/`rental-service` เข้า Kong ทีหลัง: ให้ตั้ง path
+> health check ของแต่ละ service เป็นค่าที่ไม่ซ้ำกัน (เช่น `/product/health`,
+> `/rental/health`) ห้ามใช้ `/health` ร่วมกันซ้ำ — เดิม `product-public`/
+> `rental-public` เคยประกาศ `/health` เหมือนกันทั้งคู่ ทำให้ Kong เลือก resolve
+> ไปที่ `user-service` เสมอ (route collision) จึงถูกลบออกไปแล้วใน `kong.yml`
 
 ### 9.3 คำสั่งรันทั้งระบบ
 
@@ -568,7 +581,7 @@ equipment-rental-system/
 - [ ] พอร์ตและชื่อ service (ข้อ 1)
 - [ ] ค่า `JWT_SECRET` / `INTERNAL_API_KEY` ร่วมกัน (ข้อ 2)
 - [ ] รูปแบบ response envelope + รหัส error (ข้อ 4)
-- [ ] วิธีตรวจ JWT ของ product/rental — ตรวจเอง vs เรียก `/auth/verify` (ข้อ 5.3)
+- [ ] ยืนยันว่า product/rental ไม่ต้อง verify signature เอง — Kong ตรวจให้แล้วผ่าน `jwt` plugin, service แค่ decode claims (ข้อ 5.3)
 - [ ] ยืนยันการใช้ Kong เป็น entry point + ย้าย JWT verify ไป gateway (ข้อ 1, 5.2, 5.3, 9.2)
 - [ ] ตารางสิทธิ์ RBAC (ข้อ 6.2)
 - [ ] ใครอัปเดตสถานะสินค้าตอนเช่า/คืน — product หรือ rental (ข้อ 7.1)

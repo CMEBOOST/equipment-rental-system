@@ -58,6 +58,24 @@ if [ -n "$TOKEN" ]; then
   check "GET /me (protected, valid token)" "200" "$code"
 fi
 
+# 6. Protected route, correctly-signed but expired token -> Kong itself rejects
+# (401) via claims_to_verify: ["exp"] on the jwt plugin, before user-service ever
+# sees it. Built with the same secret/iss as the consumer in deploy/kong/kong.yml.
+b64url() {
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+JWT_SECRET="dev-secret-please-change-min-32-characters"
+HEADER='{"alg":"HS256","typ":"JWT"}'
+PAYLOAD='{"sub":"00000000-0000-0000-0000-000000000000","email":"expired@example.com","username":"expireduser","role":"customer","iss":"equipment-rental-system","iat":1609459100,"exp":1609459200,"jti":"11111111-1111-1111-1111-111111111111"}'
+H=$(printf '%s' "$HEADER" | b64url)
+P=$(printf '%s' "$PAYLOAD" | b64url)
+SIGNING_INPUT="${H}.${P}"
+SIG=$(printf '%s' "$SIGNING_INPUT" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | b64url)
+EXPIRED_TOKEN="${SIGNING_INPUT}.${SIG}"
+
+RESP=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $EXPIRED_TOKEN" "$BASE/me")
+check "GET /me (protected, expired but validly-signed token) rejected by Kong" "401" "$RESP"
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
