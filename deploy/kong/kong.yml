@@ -1,0 +1,74 @@
+_format_version: "3.0"
+
+consumers:
+  - username: rental-system-issuer
+    jwt_secrets:
+      - key: equipment-rental-system   # must match claim "iss" in the token
+        algorithm: HS256
+        secret: dev-secret-please-change-min-32-characters  # == JWT_SECRET in .env.example
+
+services:
+  - name: user-service
+    url: http://user-service:8081
+    routes:
+      - name: user-public
+        paths:
+          - /api/v1/auth/register
+          - /api/v1/auth/login
+          - /api/v1/auth/refresh
+          - /health
+        strip_path: false
+      - name: user-internal
+        paths:
+          - /api/v1/auth/verify
+        strip_path: false
+        # No jwt plugin: this endpoint is called service-to-service with
+        # X-Internal-Key, not a client JWT.
+      - name: user-protected
+        paths:
+          - /api/v1/auth/logout
+          - /api/v1/me
+          - /api/v1/users
+          - /api/v1/roles
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              claims_to_verify: ["exp"]
+              run_on_preflight: false
+
+  - name: product-service
+    url: http://product-service:8082
+    # No public /health route here on purpose: a shared literal "/health" path
+    # collided across user/product/rental (Kong resolved it to user-service,
+    # breaking this service's health check) — see CONTRACT.md §9.2 note. If this
+    # service needs one, give it a distinct path, e.g. /product/health.
+    routes:
+      - name: product-protected
+        paths:
+          - /api/v1/products
+          - /api/v1/categories
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              claims_to_verify: ["exp"]
+              run_on_preflight: false
+
+  - name: rental-service
+    url: http://rental-service:8083
+    # No public /health route here on purpose: a shared literal "/health" path
+    # collided across user/product/rental (Kong resolved it to user-service,
+    # breaking this service's health check) — see CONTRACT.md §9.2 note. If this
+    # service needs one, give it a distinct path, e.g. /rental/health.
+    routes:
+      - name: rental-protected
+        paths:
+          - /api/v1/rentals
+          - /api/v1/me/rentals
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              claims_to_verify: ["exp"]
+              run_on_preflight: false
