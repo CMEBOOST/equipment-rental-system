@@ -74,6 +74,44 @@ services:
       retries: 5
     networks: [rental-net]
 
+  product-service:
+    build: ./product-service
+    container_name: product-service
+    ports: ["8082:8082"]
+    env_file: [./.env]
+    # See user-service's identical comment above: bridges the root .env's
+    # PRODUCT_-prefixed names to the unprefixed ones product-service's own
+    # config.Load() expects. product-service does not read JWT_SECRET at all
+    # (CONTRACT.md §5.3 — Kong verifies signatures, this service only decodes
+    # claims) but does need INTERNAL_API_KEY, already unprefixed/shared in
+    # .env and passed through via env_file above.
+    environment:
+      APP_PORT: ${PRODUCT_APP_PORT}
+      DB_HOST: ${PRODUCT_DB_HOST}
+      DB_PORT: ${PRODUCT_DB_PORT}
+      DB_USER: ${PRODUCT_DB_USER}
+      DB_PASSWORD: ${PRODUCT_DB_PASSWORD}
+      DB_NAME: ${PRODUCT_DB_NAME}
+    depends_on:
+      product-db:
+        condition: service_healthy
+    networks: [rental-net]
+
+  product-db:
+    image: postgres:16-alpine
+    container_name: product-db
+    environment:
+      POSTGRES_USER: ${PRODUCT_DB_USER}
+      POSTGRES_PASSWORD: ${PRODUCT_DB_PASSWORD}
+      POSTGRES_DB: ${PRODUCT_DB_NAME}
+    volumes: ["product-db-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PRODUCT_DB_USER} -d ${PRODUCT_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks: [rental-net]
+
   kong:
     image: kong:3.6
     container_name: kong
@@ -91,11 +129,13 @@ services:
     depends_on:
       - user-service
       - rental-service
+      - product-service
     networks: [rental-net]
 
 volumes:
   user-db-data:
   rental-db-data:
+  product-db-data:
 
 networks:
   rental-net:

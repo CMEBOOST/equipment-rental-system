@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Exercises the Kong-fronted rental-service: the public health route, role
-# gating on /rentals* and /me/rentals, and the graceful-failure path when
-# rental-service calls out to product-service (which does not exist yet in
-# this compose stack, so the call must fail closed with a 503, not crash).
+# gating on /rentals* and /me/rentals, and rental-service's own request/list
+# endpoints against a real product-service.
 #
 # Kept separate from smoke-test.sh on purpose: that script is a pure
-# user-service-through-Kong regression check, while this one depends on
-# product-service *not* existing yet (asserting the graceful-failure path)
-# and will need different assertions once product-service ships.
+# user-service-through-Kong regression check, while this one is
+# rental-service-specific. It originally asserted a graceful 503 for a
+# rental request against a nonexistent product (back when product-service
+# hadn't shipped yet); now that product-service is real, the same request
+# against a genuinely nonexistent product id correctly comes back as a 404
+# (product-service's own NOT_FOUND), not a 503 -- see
+# deploy/kong/product-rental-e2e-smoke-test.sh for the full real happy-path
+# exercise (rent -> approve -> return) plus the atomicity-fix proof.
 #
 # Run with the compose stack already up (docker compose up -d --build) and
 # Kong reachable at localhost:8000.
@@ -67,23 +71,23 @@ else
   PASS=$((PASS + 1))
 fi
 
-# 4. Customer requests a rental against a nonexistent product-service.
-# rental-service's ProductClient must fail closed (ErrDependency -> 503
-# INTERNAL_ERROR), not crash or hang, when the downstream call errors out.
+# 4. Customer requests a rental against a genuinely nonexistent product id.
+# rental-service's ProductClient.Get gets a real 404 from product-service and
+# must map it to NOT_FOUND, not crash or hang.
 if [ -n "$CUSTOMER_TOKEN" ]; then
   REQUEST_RESP=$(curl -s -w '\n%{http_code}' -X POST "$BASE/rentals/request" \
     -H "Authorization: Bearer $CUSTOMER_TOKEN" -H 'Content-Type: application/json' \
     -d '{"product_id":"11111111-1111-4111-8111-111111111111","start_date":"2026-01-01","due_date":"2026-01-07"}')
   REQUEST_CODE=$(echo "$REQUEST_RESP" | tail -1)
   REQUEST_BODY=$(echo "$REQUEST_RESP" | sed '$d')
-  check "POST /rentals/request (customer, product-service unreachable)" "503" "$REQUEST_CODE"
+  check "POST /rentals/request (customer, nonexistent product)" "404" "$REQUEST_CODE"
   case "$REQUEST_BODY" in
-    *INTERNAL_ERROR*)
-      echo "PASS: POST /rentals/request failure body carries INTERNAL_ERROR code"
+    *NOT_FOUND*)
+      echo "PASS: POST /rentals/request failure body carries NOT_FOUND code"
       PASS=$((PASS + 1))
       ;;
     *)
-      echo "FAIL: POST /rentals/request failure body missing INTERNAL_ERROR code (body: $REQUEST_BODY)"
+      echo "FAIL: POST /rentals/request failure body missing NOT_FOUND code (body: $REQUEST_BODY)"
       FAIL=$((FAIL + 1))
       ;;
   esac
