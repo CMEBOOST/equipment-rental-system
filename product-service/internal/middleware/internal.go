@@ -54,6 +54,23 @@ func RequireInternalKeyOrRole(internalKey string, roles ...string) gin.HandlerFu
 	}
 }
 
+// RequireInternalKeyOrAuth protects GET /products/{id}, the other endpoint
+// CONTRACT.md §8.2 grants to both an authenticated user of any role (Bearer
+// token, via Kong) *and* rental-service calling directly with X-Internal-Key
+// (no Bearer — see CONTRACT.md §7.3/§8.2). Unlike RequireInternalKeyOrRole,
+// the Bearer path here carries no role restriction: every role can read a
+// product, matching GET /products' own "Authenticated (ทุก role)" rule.
+func RequireInternalKeyOrAuth(internalKey string) gin.HandlerFunc {
+	authGate := RequireAuth()
+	return func(c *gin.Context) {
+		if subtle.ConstantTimeCompare([]byte(c.GetHeader("X-Internal-Key")), []byte(internalKey)) == 1 {
+			c.Next()
+			return
+		}
+		authGate(c)
+	}
+}
+
 func forbiddenInternalKey(c *gin.Context) {
 	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 		"success": false,

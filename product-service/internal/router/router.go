@@ -31,7 +31,11 @@ func New(database *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1.GET("/categories", authMW, categoryHandler.List)
 
 	v1.GET("/products", authMW, productHandler.List)
-	v1.GET("/products/:id", authMW, productHandler.Get)
+	// Admin/staff/customer (Bearer) OR rental-service (X-Internal-Key) — see
+	// middleware.RequireInternalKeyOrAuth and CONTRACT.md §7.3/§8.2 (the
+	// other endpoint, alongside PATCH .../status, that rental-service calls
+	// directly with only an internal key, no user Bearer token).
+	v1.GET("/products/:id", middleware.RequireInternalKeyOrAuth(cfg.InternalAPIKey), productHandler.Get)
 	v1.POST("/products", authMW, middleware.RequireRole("admin", "staff"), productHandler.Create)
 	v1.PUT("/products/:id", authMW, middleware.RequireRole("admin", "staff"), productHandler.Update)
 	v1.DELETE("/products/:id", authMW, middleware.RequireRole("admin"), productHandler.Delete)

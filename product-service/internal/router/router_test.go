@@ -152,6 +152,23 @@ func TestRouter_ChangeStatus_ToRented_Returns409WhenNotAvailable(t *testing.T) {
 	require.Equal(t, "CONFLICT", resp.Error.Code)
 }
 
+func TestRouter_GetProduct_ViaInternalKey_NoTokenNeeded(t *testing.T) {
+	db, h := newTestRouter(t)
+	cat := model.Category{ID: uuid.New(), Name: "กล้อง"}
+	require.NoError(t, db.Create(&cat).Error)
+	p := model.Product{ID: uuid.New(), CategoryID: cat.ID, Name: "x", Status: model.StatusAvailable}
+	require.NoError(t, db.Create(&p).Error)
+
+	// This is exactly how rental-service's ProductClient.Get calls this
+	// endpoint (CONTRACT.md §8.2): X-Internal-Key only, no Authorization
+	// header at all.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/products/"+p.ID.String(), nil)
+	req.Header.Set("X-Internal-Key", testInternalKey)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestRouter_GetProduct_NotFound(t *testing.T) {
 	_, h := newTestRouter(t)
 	w := doJSON(t, h, http.MethodGet, "/api/v1/products/11111111-1111-1111-1111-111111111111",
