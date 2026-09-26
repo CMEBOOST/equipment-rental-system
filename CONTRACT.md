@@ -357,14 +357,25 @@ Base path ทุก service = `/api/v1` · ทุก endpoint (ยกเว้�
 
 > ต้องมีอย่างน้อย: `id` (UUID), `name`, `description`, `category`, `price_per_day`, `status`, `created_at`
 >
-> **`PATCH /products/{id}/status` ต้องเป็น atomic/conditional update** — compare-and-swap บนเงื่อนไข
-> `status = 'available'` ก่อนเปลี่ยนเป็น `rented` (และเทียบเท่าตอนเปลี่ยนกลับ) เช่น
+> **`PATCH /products/{id}/status` ต้องเป็น atomic/conditional update เฉพาะทิศทาง `→ rented`** — compare-and-swap บนเงื่อนไข
+> `status = 'available'` ก่อนเปลี่ยนเป็น `rented` เช่น
 > `UPDATE products SET status = 'rented' WHERE id = ? AND status = 'available'` แล้วเช็คว่ามีแถวถูกแก้จริง
 > ถ้าไม่มีแถวถูกแก้ (สินค้าไม่ได้อยู่ในสถานะที่คาดไว้แล้ว) ต้องตอบ `409 Conflict` แทนที่จะเขียนทับ
-> เงื่อนไขนี้จำเป็นเพื่อกันสอง caller เช่าสินค้าชิ้นเดียวกันพร้อมกัน (race condition) —
+> เงื่อนไขนี้จำเป็นเพื่อกันสอง caller เช่าสินค้าชิ้นเดียวกันพร้อมกัน (race condition) — เป็น race condition ที่มีจริง
+> เฉพาะทิศทางนี้เท่านั้น ส่วนทิศทาง `→ available` (ตอนคืนสินค้า) ควรทำเป็น **idempotent** คือสำเร็จได้เสมอ
+> ไม่ว่าสถานะปัจจุบันของสินค้าจะเป็น `rented` หรือ `available` อยู่แล้วก็ตาม ไม่ต้องเช็ค prior-state แบบ
+> strict compare-and-swap เหมือนทิศทาง `→ rented` เพราะจะทำให้เกิด `409 Conflict` เกินความจำเป็นในกรณีที่ถูกต้อง
+> อยู่แล้ว เช่น staff แก้ไขสถานะสินค้าที่เป็น `available` อยู่แล้วด้วยมือ หรือการเรียก `Return` ซ้ำ (idempotent retry)
 > rental-service's `internal/client/product_client.go` (`ProductClient.SetStatus`) ตีความ `409`
 > เป็น `ErrProductUnavailable` ไว้แล้วตั้งแต่ตอนส่งมอบงาน โค้ดฝั่ง rental-service พร้อมใช้เงื่อนไขนี้
 > ทันทีที่ product-service ทำ endpoint นี้ให้ตรงกัน
+>
+> **`GET /products/{id}` และ `PATCH /products/{id}/status` เมื่อถูกเรียกจาก rental-service จะมาพร้อม
+> `X-Internal-Key` เท่านั้น ไม่มี `Authorization: Bearer`** — เพราะ rental-service ไม่ได้ forward token ของผู้เรียก
+> ต่อไปยัง product-service (ดู `rental-service/internal/client/product_client.go`, method `Get`/`SetStatus`)
+> ดังนั้นทั้งสอง endpoint นี้ต้องรองรับการยืนยันตัวตนด้วย internal key เพียงอย่างเดียวได้สำหรับ call path นี้
+> (ต่างจากตอนถูกเรียกโดย client จริงผ่าน Kong ซึ่งจะมี `Authorization: Bearer` แนบมาตามปกติ) — สิทธิ์ "Authenticated"
+> และ "Internal" ในตารางข้างต้นจึงหมายถึงคนละเส้นทางการเรียก ไม่ใช่ endpoint เดียวที่ต้องมีทั้งสองอย่างพร้อมกัน
 
 ### 8.3 rental-service (เจ้าของ: วิษณุพงศ์) — ⏳ ร่าง รอเจ้าของยืนยัน
 
@@ -493,10 +504,10 @@ networks:
     driver: bridge
 ```
 
-> **สถานะปัจจุบัน (2026-09-21):** `product-service`/`rental-service` ยังไม่มีโค้ด ใน
-> docker-compose.yml จริงตอนนี้ `kong.depends_on` จึงมีแค่ `user-service` — คนที่เพิ่ม
-> product-service/rental-service เข้า compose ทีหลัง ต้องเพิ่มชื่อ service นั้นเข้า
-> `kong.depends_on` ด้วย
+> **สถานะปัจจุบัน (2026-09-26):** `rental-service` มีโค้ดแล้วและถูกเดินสาย (wire) เข้า
+> `docker-compose.yml`/Kong เรียบร้อย — `kong.depends_on` ตอนนี้มีทั้ง `user-service`
+> และ `rental-service` ส่วน `product-service` ยังไม่มีโค้ด (ยังรอ เอกพล ส่งมอบงาน) คนที่เพิ่ม
+> product-service เข้า compose ทีหลัง ต้องเพิ่มชื่อ service นั้นเข้า `kong.depends_on` ด้วย
 >
 > คนที่เพิ่ม `product-service`/`rental-service` เข้า Kong ทีหลัง: ให้ตั้ง path
 > health check ของแต่ละ service เป็นค่าที่ไม่ซ้ำกัน (เช่น `/product/health`,
