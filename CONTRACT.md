@@ -342,21 +342,27 @@ Base path ทุก service = `/api/v1` · ทุก endpoint (ยกเว้�
 | GET | `/roles` | Admin, Staff | รายการบทบาท |
 | GET | `/health` | Public | สถานะบริการ |
 
-### 8.2 product-service (เจ้าของ: เอกพล) — ⏳ ร่าง รอเจ้าของยืนยัน
+### 8.2 product-service (เจ้าของ: เอกพล) — ✅ ยืนยันแล้ว
 
 | Method | Path | สิทธิ์ | หน้าที่ |
 |---|---|---|---|
-| GET | `/products` | Authenticated (ทุก role) | รายการสินค้า (ค้นหา/กรอง/แบ่งหน้า) |
+| GET | `/products` | Authenticated (ทุก role) | รายการสินค้า (ค้นหา `q`, กรอง `category_id`/`status`, แบ่งหน้า `page`/`limit`/`sort`/`order` ตาม §4.5) |
 | GET | `/products/{id}` | Authenticated | รายละเอียดสินค้า |
 | POST | `/products` | Admin, Staff | เพิ่มสินค้า |
-| PUT | `/products/{id}` | Admin, Staff | แก้ไขสินค้า |
-| DELETE | `/products/{id}` | Admin | ลบสินค้า |
-| PATCH | `/products/{id}/status` | Admin, Staff, Internal | เปลี่ยนสถานะ (`available`/`rented`) |
-| GET | `/categories` | Authenticated | รายการหมวดหมู่ |
-| GET | `/health` | Public | สถานะบริการ |
+| PUT | `/products/{id}` | Admin, Staff | แก้ไขสินค้า (partial update) |
+| DELETE | `/products/{id}` | Admin | ลบสินค้า (soft delete) — ปฏิเสธด้วย `409 CONFLICT` ถ้าสถานะเป็น `rented` |
+| PATCH | `/products/{id}/status` | Admin, Staff, **หรือ** Internal (`X-Internal-Key`, ข้าม Kong — rental-service เรียกตรง) | เปลี่ยนสถานะ |
+| GET | `/categories` | Authenticated | รายการหมวดหมู่ (seed มาจาก migration ยังไม่มี endpoint สร้าง/แก้) |
+| GET | `/health` | Public (ไม่ผ่าน Kong — เรียกตรง `:8082/health` เท่านั้น ดู §9.2 หมายเหตุเรื่อง route ชนกัน) | สถานะบริการ |
 
-> ต้องมีอย่างน้อย: `id` (UUID), `name`, `description`, `category`, `price_per_day`, `status`, `created_at`
->
+**Response fields (product):** `id` (UUID), `category_id` (UUID), `category` (ชื่อหมวดหมู่ — join
+มาให้ ไม่ต้องเรียกซ้ำ), `name`, `description`, `price_per_day`, `status`, `image_url`, `created_at`,
+`updated_at` — ครบตามที่ระบุไว้เดิมและเพิ่มเติมเพื่อความสะดวกของผู้เรียก
+
+**`status` มี 3 ค่า** ไม่ใช่ 2: `available` / `rented` / `maintenance` — ค่าที่สามเป็นการเพิ่มของ
+product-service เอง (ปิดซ่อมชั่วคราว, ตั้งได้แค่ admin/staff) ไม่ใช่ส่วนหนึ่งของ flow เช่า/คืนที่
+rental-service สั่งเปลี่ยน (rental-service ยังคงสลับแค่ `available` ↔ `rented` เหมือนเดิม)
+
 > **`PATCH /products/{id}/status` ต้องเป็น atomic/conditional update เฉพาะทิศทาง `→ rented`** — compare-and-swap บนเงื่อนไข
 > `status = 'available'` ก่อนเปลี่ยนเป็น `rented` เช่น
 > `UPDATE products SET status = 'rented' WHERE id = ? AND status = 'available'` แล้วเช็คว่ามีแถวถูกแก้จริง
@@ -504,12 +510,12 @@ networks:
     driver: bridge
 ```
 
-> **สถานะปัจจุบัน (2026-09-26):** `rental-service` มีโค้ดแล้วและถูกเดินสาย (wire) เข้า
-> `docker-compose.yml`/Kong เรียบร้อย — `kong.depends_on` ตอนนี้มีทั้ง `user-service`
-> และ `rental-service` ส่วน `product-service` ยังไม่มีโค้ด (ยังรอ เอกพล ส่งมอบงาน) คนที่เพิ่ม
-> product-service เข้า compose ทีหลัง ต้องเพิ่มชื่อ service นั้นเข้า `kong.depends_on` ด้วย
+> **สถานะปัจจุบัน (2026-09-26):** `rental-service` และ `product-service` มีโค้ดแล้วและถูกเดินสาย
+> (wire) เข้า `docker-compose.yml`/Kong ครบทั้งคู่ — `kong.depends_on` มี `user-service`,
+> `rental-service`, และ `product-service` ทั้งสามตัว ระบบพร้อมรันครบทั้ง 3 service ผ่าน
+> `docker compose up -d --build`
 >
-> คนที่เพิ่ม `product-service`/`rental-service` เข้า Kong ทีหลัง: ให้ตั้ง path
+> คนที่เพิ่ม service ใหม่เข้า Kong ทีหลัง: ให้ตั้ง path
 > health check ของแต่ละ service เป็นค่าที่ไม่ซ้ำกัน (เช่น `/product/health`,
 > `/rental/health`) ห้ามใช้ `/health` ร่วมกันซ้ำ — เดิม `product-public`/
 > `rental-public` เคยประกาศ `/health` เหมือนกันทั้งคู่ ทำให้ Kong เลือก resolve
@@ -594,6 +600,7 @@ equipment-rental-system/
 | v1 (ร่าง) | 2026-09-06 | ร่างฉบับแรก | สุรเชษฐ์ |
 | v2 | 2026-09-21 | เพิ่ม Kong API Gateway เป็น single entry point, ย้าย JWT verify ไป gateway | สุรเชษฐ์ |
 | v3 | 2026-09-26 | รับ rental-service เข้า docker-compose/Kong (`/rental/health`), แก้ endpoint table §8.3, เพิ่มข้อกำหนด atomic update ให้ §8.2 | สุรเชษฐ์ |
+| v4 | 2026-09-26 | ยืนยัน endpoint product-service (ข้อ 8.2), แก้ `PATCH /products/{id}/status` ให้เป็น atomic ตามข้อกำหนดที่เพิ่มใน v3, เพิ่ม `product-service`/`product-db` เข้า root `docker-compose.yml` และ `kong.depends_on` | เอกพล |
 
 ---
 
@@ -606,7 +613,7 @@ equipment-rental-system/
 - [ ] ยืนยันการใช้ Kong เป็น entry point + ย้าย JWT verify ไป gateway (ข้อ 1, 5.2, 5.3, 9.2)
 - [ ] ตารางสิทธิ์ RBAC (ข้อ 6.2)
 - [ ] ใครอัปเดตสถานะสินค้าตอนเช่า/คืน — product หรือ rental (ข้อ 7.1)
-- [ ] เอกพลเติม endpoint product-service (ข้อ 8.2)
+- [x] เอกพลเติม endpoint product-service (ข้อ 8.2) — ยืนยันแล้ว พร้อมโค้ด (ดู `product-service/README.md`)
 - [ ] วิษณุพงศ์เติม endpoint rental-service (ข้อ 8.3)
-- [ ] เอกพลยืนยัน `PATCH /products/{id}/status` จะทำ atomic/conditional update ตามที่ระบุใหม่ในข้อ 8.2
+- [x] เอกพลยืนยัน `PATCH /products/{id}/status` จะทำ atomic/conditional update ตามที่ระบุใหม่ในข้อ 8.2 — implement แล้วเฉพาะทิศทาง `→ rented` (ดู `product-service/internal/repository/product_repo.go`)
 - [ ] monorepo หรือ polyrepo (ข้อ 10.1)
