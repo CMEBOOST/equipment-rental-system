@@ -11,7 +11,6 @@ import (
 
 	"github.com/equipment-rental-system/rental-service/internal/client"
 	"github.com/equipment-rental-system/rental-service/internal/dto"
-	"github.com/equipment-rental-system/rental-service/internal/model"
 	"github.com/equipment-rental-system/rental-service/internal/repository"
 	"github.com/equipment-rental-system/rental-service/internal/service"
 )
@@ -204,5 +203,3 @@ func mapError(c *gin.Context, err error) {
 		internal(c, err)
 	}
 }
-
-var _ = model.StatusActive
