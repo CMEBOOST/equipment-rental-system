@@ -243,7 +243,7 @@ func TestRouter_ApproveRental_StaffAllowed(t *testing.T) {
 	require.Equal(t, http.StatusCreated, created.Code)
 	data, ok := decodeBody(t, created)["data"].(map[string]any)
 	require.True(t, ok)
-	rentalID, ok := data["ID"].(string)
+	rentalID, ok := data["id"].(string)
 	require.True(t, ok)
 
 	w := do(r, http.MethodPatch, "/api/v1/rentals/"+rentalID+"/approve", staffToken(t), nil)
@@ -277,7 +277,7 @@ func TestRouter_ReturnRental_AdminAllowed(t *testing.T) {
 	require.Equal(t, http.StatusCreated, created.Code)
 	data, ok := decodeBody(t, created)["data"].(map[string]any)
 	require.True(t, ok)
-	rentalID, ok := data["ID"].(string)
+	rentalID, ok := data["id"].(string)
 	require.True(t, ok)
 
 	returnBody := map[string]any{"return_date": "2026-01-06"}

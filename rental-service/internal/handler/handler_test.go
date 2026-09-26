@@ -252,7 +252,7 @@ func TestHandler_Create_Success_Returns201(t *testing.T) {
 	require.Equal(t, true, resp["success"])
 	data, ok := resp["data"].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, model.StatusActive, data["Status"])
+	require.Equal(t, model.StatusActive, data["status"])
 }
 
 func TestHandler_Request_Success_Returns201WithPendingStatus(t *testing.T) {
@@ -272,8 +272,8 @@ func TestHandler_Request_Success_Returns201WithPendingStatus(t *testing.T) {
 	resp := decodeBody(t, w)
 	data, ok := resp["data"].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, model.StatusPending, data["Status"])
-	require.Equal(t, userID.String(), data["UserID"])
+	require.Equal(t, model.StatusPending, data["status"])
+	require.Equal(t, userID.String(), data["user_id"])
 }
 
 func TestHandler_Request_MissingUserContext_Returns401(t *testing.T) {
@@ -335,7 +335,7 @@ func TestHandler_Get_Owner_Returns200(t *testing.T) {
 	resp := decodeBody(t, w)
 	data, ok := resp["data"].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, rental.ID.String(), data["ID"])
+	require.Equal(t, rental.ID.String(), data["id"])
 }
 
 func TestHandler_Get_Admin_CanViewAnyRental_Returns200(t *testing.T) {
@@ -424,7 +424,7 @@ func TestHandler_MyList_FiltersToAuthenticatedUser(t *testing.T) {
 	for _, item := range data {
 		rentalMap, ok := item.(map[string]any)
 		require.True(t, ok)
-		require.Equal(t, userA.String(), rentalMap["UserID"])
+		require.Equal(t, userA.String(), rentalMap["user_id"])
 	}
 }
 
