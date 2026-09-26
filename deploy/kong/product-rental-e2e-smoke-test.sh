@@ -6,9 +6,11 @@
 # rental-service failed *gracefully* when product-service was unreachable --
 # this is the first script that proves the real happy path, including the
 # cross-service effect of a rental approval actually flipping a product's
-# status, and the atomicity fix (product_repo.go's compare-and-swap)
-# rejecting a second rental attempt on an already-rented product with a
-# genuine 409, not a silent double-booking.
+# status. It also directly exercises the atomicity fix (product_repo.go's
+# compare-and-swap) via a raw PATCH /products/{id}/status call (check 9b) --
+# a second POST /rentals on the same product (check 9) gets rejected first
+# by rental-service's own pre-check, so that call alone would still pass
+# even if the compare-and-swap were reverted; 9b is what actually proves it.
 #
 # Run with the compose stack already up (docker compose up -d --build) and
 # Kong reachable at localhost:8000.
@@ -143,6 +145,18 @@ SECOND_RENTAL_RESP=$(curl -s -w '\n%{http_code}' -X POST "$BASE/rentals" \
   -d "{\"user_id\":\"$(extract user_id "$APPROVE_BODY")\",\"product_id\":\"$PRODUCT_ID\",\"start_date\":\"2027-02-01\",\"due_date\":\"2027-02-07\"}")
 SECOND_RENTAL_CODE=$(echo "$SECOND_RENTAL_RESP" | tail -1)
 check "second rental on an already-rented product is rejected" "409" "$SECOND_RENTAL_CODE"
+
+# 9b. Check #9 above actually gets rejected by rental-service's own
+# pre-check (product.Status != "available") before it ever calls
+# PATCH /products/{id}/status -- so it does NOT, by itself, exercise the
+# atomicity fix's compare-and-swap. Hit that endpoint directly, the same way
+# rental-service would, to prove the CAS itself rejects the conflicting
+# transition (this is the call product_repo.go's UpdateStatus guards).
+DIRECT_STATUS_RESP=$(curl -s -w '\n%{http_code}' -X PATCH "$BASE/products/$PRODUCT_ID/status" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"status":"rented"}')
+DIRECT_STATUS_CODE=$(echo "$DIRECT_STATUS_RESP" | tail -1)
+check "PATCH /products/{id}/status to rented on an already-rented product is rejected (CAS)" "409" "$DIRECT_STATUS_CODE"
 
 # 10. Return the rental -- active -> returned.
 RETURN_RESP=$(curl -s -w '\n%{http_code}' -X PATCH "$BASE/rentals/$RENTAL_ID/return" \
