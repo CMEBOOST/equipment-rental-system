@@ -356,6 +356,15 @@ Base path ทุก service = `/api/v1` · ทุก endpoint (ยกเว้�
 | GET | `/health` | Public | สถานะบริการ |
 
 > ต้องมีอย่างน้อย: `id` (UUID), `name`, `description`, `category`, `price_per_day`, `status`, `created_at`
+>
+> **`PATCH /products/{id}/status` ต้องเป็น atomic/conditional update** — compare-and-swap บนเงื่อนไข
+> `status = 'available'` ก่อนเปลี่ยนเป็น `rented` (และเทียบเท่าตอนเปลี่ยนกลับ) เช่น
+> `UPDATE products SET status = 'rented' WHERE id = ? AND status = 'available'` แล้วเช็คว่ามีแถวถูกแก้จริง
+> ถ้าไม่มีแถวถูกแก้ (สินค้าไม่ได้อยู่ในสถานะที่คาดไว้แล้ว) ต้องตอบ `409 Conflict` แทนที่จะเขียนทับ
+> เงื่อนไขนี้จำเป็นเพื่อกันสอง caller เช่าสินค้าชิ้นเดียวกันพร้อมกัน (race condition) —
+> rental-service's `internal/client/product_client.go` (`ProductClient.SetStatus`) ตีความ `409`
+> เป็น `ErrProductUnavailable` ไว้แล้วตั้งแต่ตอนส่งมอบงาน โค้ดฝั่ง rental-service พร้อมใช้เงื่อนไขนี้
+> ทันทีที่ product-service ทำ endpoint นี้ให้ตรงกัน
 
 ### 8.3 rental-service (เจ้าของ: วิษณุพงศ์) — ⏳ ร่าง รอเจ้าของยืนยัน
 
@@ -368,7 +377,7 @@ Base path ทุก service = `/api/v1` · ทุก endpoint (ยกเว้�
 | PATCH | `/rentals/{id}/return` | Admin, Staff | บันทึกการคืนสินค้า + เปลี่ยนสถานะสินค้าเป็นว่าง |
 | PATCH | `/rentals/{id}/approve` | Admin, Staff | อนุมัติคำขอเช่า |
 | GET | `/me/rentals` | Authenticated | ประวัติการเช่าของตนเอง |
-| GET | `/health` | Public | สถานะบริการ |
+| GET | `/rental/health` (ผ่าน Kong) | Public | สถานะบริการ — path ต่างจาก `/health` ที่ service เสิร์ฟเอง เพื่อเลี่ยง route ชนกันใน Kong (ดู 9.2) |
 
 > ต้องมีอย่างน้อย: `id` (UUID), `user_id` (UUID), `product_id` (UUID), `start_date`, `due_date`, `return_date`, `total_price`, `status` (`pending`/`active`/`returned`/`cancelled`), `created_at`
 > การคำนวณค่าเช่า: ดึง `price_per_day` จาก product-service × จำนวนวัน
@@ -573,6 +582,7 @@ equipment-rental-system/
 |---|---|---|---|
 | v1 (ร่าง) | 2026-09-06 | ร่างฉบับแรก | สุรเชษฐ์ |
 | v2 | 2026-09-21 | เพิ่ม Kong API Gateway เป็น single entry point, ย้าย JWT verify ไป gateway | สุรเชษฐ์ |
+| v3 | 2026-09-26 | รับ rental-service เข้า docker-compose/Kong (`/rental/health`), แก้ endpoint table §8.3, เพิ่มข้อกำหนด atomic update ให้ §8.2 | สุรเชษฐ์ |
 
 ---
 
@@ -587,4 +597,5 @@ equipment-rental-system/
 - [ ] ใครอัปเดตสถานะสินค้าตอนเช่า/คืน — product หรือ rental (ข้อ 7.1)
 - [ ] เอกพลเติม endpoint product-service (ข้อ 8.2)
 - [ ] วิษณุพงศ์เติม endpoint rental-service (ข้อ 8.3)
+- [ ] เอกพลยืนยัน `PATCH /products/{id}/status` จะทำ atomic/conditional update ตามที่ระบุใหม่ในข้อ 8.2
 - [ ] monorepo หรือ polyrepo (ข้อ 10.1)
