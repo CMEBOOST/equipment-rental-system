@@ -12,7 +12,8 @@ Kong (DB-less/declarative mode) เป็น single entry point หน้าท�
 | ไฟล์ | หน้าที่ |
 |---|---|
 | `kong.yml` | Kong declarative config — services, routes, JWT consumer/credential |
-| `smoke-test.sh` | ทดสอบ end-to-end ผ่าน Kong จริง (public/protected route, token หมดอายุ/ปลอม) |
+| `smoke-test.sh` | ทดสอบ end-to-end ผ่าน Kong จริง (public/protected route, token หมดอายุ/ปลอม) — คลุม user-service |
+| `rental-smoke-test.sh` | ทดสอบ end-to-end ผ่าน Kong จริง สำหรับ rental-service (role-gating, dependency-failure path) |
 
 ## รันและทดสอบ
 
@@ -21,18 +22,22 @@ Kong (DB-less/declarative mode) เป็น single entry point หน้าท�
 ```bash
 cp -n .env.example .env
 docker compose up -d --build
-docker compose ps          # user-service, user-db, kong ต้อง healthy/running ทั้ง 3
+docker compose ps          # user-service, user-db, rental-service, rental-db, kong ต้อง healthy/running ทั้งหมด
 ```
 
 รัน smoke test อัตโนมัติ (ครอบคลุมสุดในคำสั่งเดียว):
 
 ```bash
 ./deploy/kong/smoke-test.sh
+./deploy/kong/rental-smoke-test.sh
 ```
 
-ต้องได้ `6 passed, 0 failed` — เช็ค public route ไม่ต้องมี token, protected route ปฏิเสธ
+`smoke-test.sh` ต้องได้ `6 passed, 0 failed` — เช็ค public route ไม่ต้องมี token, protected route ปฏิเสธ
 ทั้งกรณีไม่มี token/token ปลอม/token หมดอายุ (401 จาก Kong เอง ก่อนถึง service), และ
 register+login+เข้าถึง protected route จริงด้วย token ที่ได้จริง (200)
+
+`rental-smoke-test.sh` ต้องได้ `8 passed, 0 failed` — เช็ค role-gating ของ rental endpoint ผ่าน Kong
+(admin/staff/customer) และ path ที่ product-service ยังไม่มีโค้ดจริงตอบ `503`/`ErrDependency` ตามที่คาด
 
 ### เช็คด้วยมือทีละจุด
 
@@ -52,17 +57,26 @@ curl -X OPTIONS -i http://localhost:8000/api/v1/me       # preflight -> 204 (COR
 | `POST /api/v1/auth/verify` | ไม่ผ่าน JWT — ใช้ `X-Internal-Key` (service เรียกกันเอง ไม่ใช่ client) |
 | `POST /api/v1/auth/logout`, `/me*`, `/users*`, `/roles` | ✅ ต้องมี token ที่ Kong ตรวจแล้ว |
 
-### product-service / rental-service (ยังไม่มีโค้ดจริง — Kong ประกาศ path ไว้ล่วงหน้า)
+### rental-service (มีโค้ดจริง ทำงานได้)
+
+| Path | ต้องมี JWT? |
+|---|---|
+| `GET /rental/health` | ไม่ (public) — path ต่างจาก `/health` ที่ service เสิร์ฟเอง โดยตั้งใจ (ดูด้านล่าง) |
+| `POST /api/v1/rentals`, `/rentals/request`, `/rentals/{id}/approve`, `/rentals/{id}/return`, `GET /api/v1/rentals*`, `/api/v1/me/rentals` | ✅ ต้องมี token ที่ Kong ตรวจแล้ว — สิทธิ์ตาม role เช็คในตัว rental-service เอง |
+
+rental-service เรียก product-service ต่อ (`GET /products/{id}`, `PATCH /products/{id}/status`)
+ด้วย `X-Internal-Key` โดยตรงไปที่ container ไม่ผ่าน Kong — ดู CONTRACT.md §8.2 และ §7.3
+
+### product-service (ยังไม่มีโค้ดจริง — Kong ประกาศ path ไว้ล่วงหน้า)
 
 | Path | Service |
 |---|---|
 | `/api/v1/products`, `/api/v1/categories` | product-service (ยิงแล้วได้ 503 จนกว่าจะมี service จริง) |
-| `/api/v1/rentals`, `/api/v1/me/rentals` | rental-service (เช่นกัน) |
 
-**ไม่มี `/health` ของ product/rental ตอนนี้โดยตั้งใจ** — path `/health` แบบเดียวกันถ้าประกาศ
-ซ้ำกันทั้ง 3 service ทำให้ Kong route ชนกัน (ดู kong.yml คอมเมนต์) เอกพลกับวิษณุพงศ์ต้องเพิ่ม
-health route ของตัวเองด้วย path ที่ไม่ซ้ำ เช่น `/product/health`, `/rental/health` ตอนสร้าง
-service จริง
+**ไม่มี `/health` ของ product-service ตอนนี้โดยตั้งใจ** — path `/health` แบบเดียวกันถ้าประกาศ
+ซ้ำกันหลาย service ทำให้ Kong route ชนกัน (ดู kong.yml คอมเมนต์) เอกพลต้องเพิ่ม health route
+ของตัวเองด้วย path ที่ไม่ซ้ำ เช่น `/product/health` ตอนสร้าง service จริง — วิษณุพงศ์ทำแบบนี้ไปแล้ว
+สำหรับ rental-service ที่ `/rental/health` (ดูตารางด้านบน)
 
 ## ข้อควรรู้ก่อนแก้ไข
 

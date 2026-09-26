@@ -42,6 +42,38 @@ services:
       retries: 5
     networks: [rental-net]
 
+  rental-service:
+    build: ./rental-service
+    container_name: rental-service
+    ports: ["8083:8083"]
+    env_file: [./.env]
+    environment:
+      APP_PORT: ${RENTAL_APP_PORT}
+      DB_HOST: ${RENTAL_DB_HOST}
+      DB_PORT: ${RENTAL_DB_PORT}
+      DB_USER: ${RENTAL_DB_USER}
+      DB_PASSWORD: ${RENTAL_DB_PASSWORD}
+      DB_NAME: ${RENTAL_DB_NAME}
+    depends_on:
+      rental-db:
+        condition: service_healthy
+    networks: [rental-net]
+
+  rental-db:
+    image: postgres:16-alpine
+    container_name: rental-db
+    environment:
+      POSTGRES_USER: ${RENTAL_DB_USER}
+      POSTGRES_PASSWORD: ${RENTAL_DB_PASSWORD}
+      POSTGRES_DB: ${RENTAL_DB_NAME}
+    volumes: ["rental-db-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${RENTAL_DB_USER} -d ${RENTAL_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks: [rental-net]
+
   kong:
     image: kong:3.6
     container_name: kong
@@ -58,10 +90,12 @@ services:
       - "8000:8000"
     depends_on:
       - user-service
+      - rental-service
     networks: [rental-net]
 
 volumes:
   user-db-data:
+  rental-db-data:
 
 networks:
   rental-net:
