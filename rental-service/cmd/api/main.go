@@ -13,9 +13,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("config error: %v", err)
 	}
+	// Migrations run before anything serves traffic, so a fresh database
+	// (e.g. `docker compose up` on an empty volume) is usable without a
+	// separate manual step. Up() is a no-op once the schema is current.
+	log.Printf("running migrations from %s", cfg.MigrationsPath)
 	if err := db.Migrate(cfg); err != nil {
 		log.Fatalf("migration error: %v", err)
 	}
+	log.Print("migrations up to date")
 	database, err := db.Connect(cfg)
 	if err != nil {
 		log.Fatalf("database error: %v", err)
