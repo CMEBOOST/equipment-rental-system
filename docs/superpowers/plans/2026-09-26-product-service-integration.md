@@ -827,6 +827,17 @@ Report the resulting PR URL back to the user.
 
 ## Known Limitations (carried forward, not fixed by this plan)
 
+- **Pre-existing check-then-delete race** (found by the final review, not fixed here):
+  `ProductService.Delete` reads a product's status, then `ProductRepo.SoftDelete` deletes it
+  unconditionally — a concurrent `PATCH /products/{id}/status` (the CAS this plan fixed)
+  could flip the product to `rented` in between, so an active rental ends up pointing at a
+  soft-deleted product; that rental's later `Return` call then 404s against product-service
+  forever. This predates this branch (เอกพล's original delivery) and touches a code path
+  neither of this plan's two fixes touch — left as a follow-up, not fixed here to avoid
+  unreviewed scope creep. A future fix: scope `SoftDelete`'s `DELETE` with
+  `Where("status <> ?", model.StatusRented)` and return `ErrProductRented` when
+  `RowsAffected == 0`.
+
 - The atomic guard covers only the `→ rented` direction, matching CONTRACT.md §8.2's exact,
   deliberate scoping — it is not a general-purpose optimistic-concurrency mechanism for every
   field on `Product` (e.g. two concurrent `PUT /products/{id}` price edits can still race and
