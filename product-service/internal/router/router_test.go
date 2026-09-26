@@ -126,6 +126,32 @@ func TestRouter_ChangeStatus_ViaInternalKey_NoTokenNeeded(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 }
 
+func TestRouter_ChangeStatus_ToRented_Returns409WhenNotAvailable(t *testing.T) {
+	db, h := newTestRouter(t)
+	cat := model.Category{ID: uuid.New(), Name: "กล้อง"}
+	require.NoError(t, db.Create(&cat).Error)
+	p := model.Product{ID: uuid.New(), CategoryID: cat.ID, Name: "x", Status: model.StatusRented}
+	require.NoError(t, db.Create(&p).Error)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/products/"+p.ID.String()+"/status",
+		bytes.NewBufferString(`{"status":"rented"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Key", testInternalKey)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	require.Equal(t, http.StatusConflict, w.Code)
+
+	var resp struct {
+		Success bool `json:"success"`
+		Error   struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.False(t, resp.Success)
+	require.Equal(t, "CONFLICT", resp.Error.Code)
+}
+
 func TestRouter_GetProduct_NotFound(t *testing.T) {
 	_, h := newTestRouter(t)
 	w := doJSON(t, h, http.MethodGet, "/api/v1/products/11111111-1111-1111-1111-111111111111",

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/google/uuid"
@@ -8,6 +9,13 @@ import (
 
 	"github.com/equipment-rental-system/product-service/internal/model"
 )
+
+// ErrStatusConflict is returned by UpdateStatus when the caller asked to
+// transition a product to "rented" but its current status was not
+// "available" — see the compare-and-swap below and CONTRACT.md §8.2's
+// atomicity requirement (added specifically to close the race where two
+// concurrent rental requests could both "win" and double-book one product).
+var ErrStatusConflict = errors.New("product status is not available")
 
 type ProductRepo struct{ db *gorm.DB }
 
@@ -94,15 +102,41 @@ func (r *ProductRepo) Update(p *model.Product) error {
 }
 
 func (r *ProductRepo) UpdateStatus(id uuid.UUID, status string) (*model.Product, error) {
-	p, err := r.FindByID(id)
-	if err != nil {
-		return nil, err
+	if status != model.StatusRented {
+		// Every other transition (→ available, → maintenance) is intentionally
+		// unconditional per CONTRACT.md §8.2 — idempotent by design, so a retry
+		// or an admin correcting an already-correct status never 409s.
+		p, err := r.FindByID(id)
+		if err != nil {
+			return nil, err
+		}
+		p.Status = status
+		if err := r.db.Model(p).Update("status", status).Error; err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
-	p.Status = status
-	if err := r.db.Model(p).Update("status", status).Error; err != nil {
-		return nil, err
+
+	// → rented is the one direction with a real race: two callers could both
+	// read "available" and both try to rent the same product. The WHERE
+	// clause makes the flip atomic at the database level — only the caller
+	// whose UPDATE runs while the row is still "available" affects a row.
+	// .Model(&model.Product{}) keeps GORM's automatic soft-delete scope
+	// (deleted_at IS NULL), so a deleted product behaves like "not found"
+	// below rather than surfacing as a status conflict.
+	result := r.db.Model(&model.Product{}).
+		Where("id = ? AND status = ?", id, model.StatusAvailable).
+		Update("status", model.StatusRented)
+	if result.Error != nil {
+		return nil, result.Error
 	}
-	return p, nil
+	if result.RowsAffected == 0 {
+		if _, err := r.FindByID(id); err != nil {
+			return nil, err // not found (or soft-deleted) — propagate gorm.ErrRecordNotFound
+		}
+		return nil, ErrStatusConflict // exists, but wasn't "available"
+	}
+	return r.FindByID(id)
 }
 
 func (r *ProductRepo) SoftDelete(id uuid.UUID) error {

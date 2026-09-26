@@ -111,6 +111,74 @@ func TestProductRepo_UpdateStatus(t *testing.T) {
 	require.Equal(t, model.StatusRented, reloaded.Status)
 }
 
+func TestProductRepo_UpdateStatus_ToRented_ConflictsWhenNotAvailable(t *testing.T) {
+	db := newTestDB(t)
+	cat := seedCategory(t, db, "กล้อง")
+	repo := repository.NewProductRepo(db)
+	p := newProduct(cat.ID, "item", model.StatusMaintenance)
+	require.NoError(t, repo.Create(p))
+
+	_, err := repo.UpdateStatus(p.ID, model.StatusRented)
+	require.ErrorIs(t, err, repository.ErrStatusConflict)
+
+	reloaded, err := repo.FindByID(p.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.StatusMaintenance, reloaded.Status) // unchanged by the failed attempt
+}
+
+func TestProductRepo_UpdateStatus_ToRented_AlreadyRented_Conflicts(t *testing.T) {
+	db := newTestDB(t)
+	cat := seedCategory(t, db, "กล้อง")
+	repo := repository.NewProductRepo(db)
+	p := newProduct(cat.ID, "item", model.StatusRented)
+	require.NoError(t, repo.Create(p))
+
+	// This is the exact race this fix closes: a second caller trying to rent
+	// a product some other caller already rented must not succeed.
+	_, err := repo.UpdateStatus(p.ID, model.StatusRented)
+	require.ErrorIs(t, err, repository.ErrStatusConflict)
+}
+
+func TestProductRepo_UpdateStatus_ToRented_NotFound_ReturnsGormErrRecordNotFound(t *testing.T) {
+	db := newTestDB(t)
+	repo := repository.NewProductRepo(db)
+
+	_, err := repo.UpdateStatus(uuid.New(), model.StatusRented)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestProductRepo_UpdateStatus_ToRented_SoftDeletedProduct_ReturnsGormErrRecordNotFound(t *testing.T) {
+	db := newTestDB(t)
+	cat := seedCategory(t, db, "กล้อง")
+	repo := repository.NewProductRepo(db)
+	p := newProduct(cat.ID, "item", model.StatusAvailable)
+	require.NoError(t, repo.Create(p))
+	require.NoError(t, repo.SoftDelete(p.ID))
+
+	// A soft-deleted row must never be reported as a status conflict — it
+	// must look exactly like "not found", same as every other endpoint.
+	_, err := repo.UpdateStatus(p.ID, model.StatusRented)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestProductRepo_UpdateStatus_ToAvailable_IdempotentRegardlessOfCurrentStatus(t *testing.T) {
+	db := newTestDB(t)
+	cat := seedCategory(t, db, "กล้อง")
+	repo := repository.NewProductRepo(db)
+	p := newProduct(cat.ID, "item", model.StatusRented)
+	require.NoError(t, repo.Create(p))
+
+	updated, err := repo.UpdateStatus(p.ID, model.StatusAvailable)
+	require.NoError(t, err)
+	require.Equal(t, model.StatusAvailable, updated.Status)
+
+	// Idempotent retry — CONTRACT.md §8.2 requires the reverse direction to
+	// always succeed, unlike "→ rented" above.
+	updated, err = repo.UpdateStatus(p.ID, model.StatusAvailable)
+	require.NoError(t, err)
+	require.Equal(t, model.StatusAvailable, updated.Status)
+}
+
 func TestProductRepo_SoftDelete_ExcludesFromFindAndList(t *testing.T) {
 	db := newTestDB(t)
 	cat := seedCategory(t, db, "กล้อง")

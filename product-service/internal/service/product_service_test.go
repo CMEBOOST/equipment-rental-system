@@ -81,6 +81,19 @@ func TestProductService_Delete_RejectsRentedProduct(t *testing.T) {
 	require.ErrorIs(t, err, service.ErrProductRented)
 }
 
+func TestProductService_ChangeStatus_ToRented_ConflictsWhenAlreadyRented(t *testing.T) {
+	svc, db := newTestService(t)
+	cat := model.Category{ID: uuid.New(), Name: "กล้อง"}
+	require.NoError(t, db.Create(&cat).Error)
+	p, err := svc.Create(cat.ID, "Canon EOS R5", "", 1200, "")
+	require.NoError(t, err)
+	_, err = svc.ChangeStatus(p.ID, model.StatusRented) // available -> rented, succeeds
+	require.NoError(t, err)
+
+	_, err = svc.ChangeStatus(p.ID, model.StatusRented) // already rented -> conflict
+	require.ErrorIs(t, err, repository.ErrStatusConflict)
+}
+
 func TestProductService_Delete_AllowsAvailableProduct(t *testing.T) {
 	svc, db := newTestService(t)
 	cat := model.Category{ID: uuid.New(), Name: "กล้อง"}

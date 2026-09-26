@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/equipment-rental-system/product-service/internal/repository"
 	"github.com/equipment-rental-system/product-service/internal/service"
 )
 
@@ -45,6 +46,8 @@ func mapProductError(c *gin.Context, err error) {
 		respondValidationError(c, "ไม่พบหมวดหมู่สินค้าที่ระบุ")
 	case errors.Is(err, service.ErrProductRented):
 		respondConflict(c, "ไม่สามารถลบสินค้าที่กำลังถูกเช่าอยู่ได้")
+	case errors.Is(err, repository.ErrStatusConflict):
+		respondConflict(c, "สินค้าไม่ได้อยู่ในสถานะ available จึงเปลี่ยนเป็น rented ไม่ได้")
 	default:
 		respondInternalError(c, err)
 	}
