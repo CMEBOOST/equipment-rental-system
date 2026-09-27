@@ -1,0 +1,332 @@
+openapi: 3.0.3
+info:
+  title: rental-service API
+  description: >
+    ระบบจัดการการเช่า — สร้างคำขอเช่า, อนุมัติ, คืนสินค้า. เรียกผ่าน Kong
+    (`/api/v1/rentals*`, `/api/v1/me/rentals`) ยกเว้น health ที่เป็น
+    `/rental/health`. ดู CONTRACT.md §8.3 และ rental-service/README.md
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8000
+    description: ผ่าน Kong API Gateway (ทางที่ client ควรใช้)
+  - url: http://localhost:8083
+    description: ยิงตรง container (เฉพาะ debug ไม่ผ่าน Kong)
+
+tags:
+  - name: rentals
+  - name: health
+
+security:
+  - bearerAuth: []
+
+paths:
+  /rental/health:
+    get:
+      tags: [health]
+      summary: เช็คสถานะบริการ (public, path ผ่าน Kong ต่างจาก /health ที่ service เสิร์ฟเองโดยตั้งใจ)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          status: { type: string, example: ok }
+                          service: { type: string, example: rental-service }
+                          db: { type: string, example: up }
+
+  /api/v1/rentals:
+    get:
+      tags: [rentals]
+      summary: รายการเช่าทั้งหมด (admin, staff)
+      parameters:
+        - in: query
+          name: status
+          schema: { $ref: "#/components/schemas/RentalStatus" }
+        - in: query
+          name: sort
+          schema: { type: string }
+        - in: query
+          name: order
+          schema: { type: string, enum: [asc, desc] }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200": { $ref: "#/components/responses/PaginatedRentalList" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [rentals]
+      summary: สร้างรายการเช่าแทนลูกค้า (admin, staff — เริ่มที่สถานะ active ทันที)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, product_id, start_date, due_date]
+              properties:
+                user_id: { type: string, format: uuid }
+                product_id: { type: string, format: uuid }
+                start_date: { type: string, format: date, example: "2026-01-01" }
+                due_date: { type: string, format: date, example: "2026-01-07" }
+      responses:
+        "201":
+          description: สร้างสำเร็จ (จองสินค้าที่ product-service ให้แล้ว)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Rental" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: NOT_FOUND — ไม่พบสินค้า
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: CONFLICT — สินค้าไม่ว่าง
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "503":
+          description: INTERNAL_ERROR — เรียก product-service/user-service ไม่สำเร็จ
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/rentals/request:
+    post:
+      tags: [rentals]
+      summary: ลูกค้าขอเช่าเอง (customer — เริ่มที่สถานะ pending, ยังไม่แตะสถานะสินค้า)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id, start_date, due_date]
+              properties:
+                product_id: { type: string, format: uuid }
+                start_date: { type: string, format: date }
+                due_date: { type: string, format: date }
+      responses:
+        "201":
+          description: สร้างคำขอสำเร็จ
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Rental" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: NOT_FOUND — ไม่พบสินค้า
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/rentals/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RentalId"
+    get:
+      tags: [rentals]
+      summary: รายละเอียดรายการเช่า (admin, staff, หรือเจ้าของรายการ)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Rental" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/rentals/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/RentalId"
+    patch:
+      tags: [rentals]
+      summary: อนุมัติคำขอเช่า (admin, staff — pending → active, จองสินค้าที่ product-service)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Rental" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: CONFLICT — สินค้าไม่ว่างแล้ว หรือรายการเช่าไม่ได้อยู่สถานะ pending
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/rentals/{id}/return:
+    parameters:
+      - $ref: "#/components/parameters/RentalId"
+    patch:
+      tags: [rentals]
+      summary: บันทึกการคืนสินค้า (admin, staff — active → returned, คืนสถานะสินค้าเป็น available)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [return_date]
+              properties:
+                return_date: { type: string, format: date }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Rental" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: CONFLICT — รายการเช่าไม่ได้อยู่สถานะ active
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/rentals:
+    get:
+      tags: [rentals]
+      summary: รายการเช่าของตัวเอง (authenticated ทุก role)
+      parameters:
+        - in: query
+          name: status
+          schema: { $ref: "#/components/schemas/RentalStatus" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200": { $ref: "#/components/responses/PaginatedRentalList" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Kong ตรวจ signature/expiry แล้ว — rental-service แค่ decode payload
+
+  parameters:
+    RentalId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+
+  responses:
+    ValidationError:
+      description: VALIDATION_ERROR
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Unauthenticated:
+      description: UNAUTHENTICATED
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Forbidden:
+      description: FORBIDDEN
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    NotFound:
+      description: NOT_FOUND
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    PaginatedRentalList:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/SuccessEnvelope"
+              - properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Rental" }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+
+  schemas:
+    SuccessEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: {}
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string }
+            details: { nullable: true }
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+    RentalStatus:
+      type: string
+      enum: [pending, active, returned, cancelled]
+      description: >
+        pending → active (approve) → returned (return). cancelled มีอยู่ใน DB
+        constraint แต่ยังไม่มี endpoint ให้เปลี่ยนเป็นสถานะนี้ (เผื่อไว้สำหรับอนาคต)
+    Rental:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        product_id: { type: string, format: uuid }
+        start_date: { type: string, format: date }
+        due_date: { type: string, format: date }
+        return_date: { type: string, format: date, nullable: true }
+        total_price:
+          type: number
+          format: double
+          description: price_per_day × (due_date - start_date) วัน ตอนสร้าง ไม่เปลี่ยนตามราคาสินค้าในภายหลัง
+        status: { $ref: "#/components/schemas/RentalStatus" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

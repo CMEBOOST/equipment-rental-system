@@ -64,6 +64,7 @@ equipment-rental-system/
 ├── deploy/
 │   └── kong/            # kong.yml + smoke test scripts + README
 ├── docs/
+│   ├── openapi/          # OpenAPI spec ของทั้ง 3 service — เสิร์ฟเป็น Swagger UI ผ่าน Kong ที่ /docs
 │   ├── user-management-service-design.md
 │   └── superpowers/     # เอกสารออกแบบ/แผนการ implement
 ├── CONTRACT.md          # ข้อตกลงระหว่าง service (พอร์ต, JWT, response format, RBAC)
@@ -78,7 +79,7 @@ equipment-rental-system/
 ```bash
 cp .env.example .env
 docker compose up -d --build
-docker compose ps    # user-service, user-db, product-service, product-db, rental-service, rental-db, kong ต้อง healthy/running
+docker compose ps    # user-service, user-db, product-service, product-db, rental-service, rental-db, docs, kong ต้อง healthy/running
 ```
 
 ตรวจสอบว่าระบบทำงานผ่าน Kong:
@@ -88,6 +89,9 @@ curl http://localhost:8000/health          # -> 200 (user-service)
 curl http://localhost:8000/rental/health   # -> 200 (rental-service)
 curl http://localhost:8000/api/v1/products # -> 401 ไม่มี token (product-service ยังไม่มี public /health route แยก ดู deploy/kong/README.md)
 ```
+
+เปิด **Swagger UI** ที่ <http://localhost:8000/docs/> (เลือก service จาก dropdown มุมบนขวา) เพื่อดู/ทดลองยิง
+API จริงของทั้ง 3 service ผ่าน Kong ได้ทันที — spec อยู่ที่ `docs/openapi/*.yaml`
 
 รัน smoke test ทั้งระบบ:
 
@@ -117,6 +121,11 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 | user-service | `/api/v1/auth/*`, `/api/v1/me`, `/api/v1/users`, `/api/v1/roles` | สมัคร/login/refresh, จัดการโปรไฟล์, จัดการผู้ใช้และบทบาท (admin/staff/customer) | [user-service/README.md](user-service/README.md) |
 | product-service | `/api/v1/products`, `/api/v1/categories` | CRUD สินค้า/หมวดหมู่, ค้นหา/กรอง/แบ่งหน้า, เปลี่ยนสถานะสินค้า | [product-service/README.md](product-service/README.md) |
 | rental-service | `/api/v1/rentals`, `/api/v1/me/rentals` | สร้าง/อนุมัติ/คืนรายการเช่า, ประวัติการเช่าของตัวเอง | [rental-service/README.md](rental-service/README.md) |
+
+**Swagger UI (แบบ interactive):** <http://localhost:8000/docs/> — เลือก service จาก dropdown แล้ว
+ลองยิง request จริงผ่าน Kong ได้จากในหน้านั้นเลย (กด "Authorize" ใส่ Bearer token ที่ได้จาก
+`/api/v1/auth/login`) ไฟล์ spec อยู่ที่ [docs/openapi/](docs/openapi/) เขียนขึ้นจากโค้ด/CONTRACT.md
+จริง — ถ้า endpoint เปลี่ยนต้องแก้ไฟล์ spec ตามด้วย (ไม่ได้ generate อัตโนมัติจากโค้ด)
 
 ดู path ทั้งหมดที่ Kong ประกาศไว้และวิธีทดสอบผ่าน gateway ที่
 [deploy/kong/README.md](deploy/kong/README.md) และดูข้อตกลงกลางระหว่าง service (RBAC,

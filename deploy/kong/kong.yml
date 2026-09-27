@@ -83,3 +83,15 @@ services:
         paths:
           - /rental/health
         strip_path: true
+
+  - name: docs
+    # Swagger UI (docker-compose service "docs"). BASE_URL=/docs on that
+    # container makes its own nginx serve everything under /docs/ already,
+    # so this route must forward the /docs prefix through unchanged
+    # (strip_path: false) instead of stripping it like the other services.
+    url: http://docs:8080
+    routes:
+      - name: docs-public
+        paths:
+          - /docs
+        strip_path: false

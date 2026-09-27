@@ -23,7 +23,7 @@ Kong (DB-less/declarative mode) เป็น single entry point หน้าท�
 ```bash
 cp -n .env.example .env
 docker compose up -d --build
-docker compose ps          # user-service, user-db, product-service, product-db, rental-service, rental-db, kong ต้อง healthy/running ทั้งหมด
+docker compose ps          # user-service, user-db, product-service, product-db, rental-service, rental-db, docs, kong ต้อง healthy/running ทั้งหมด
 ```
 
 รัน smoke test อัตโนมัติ (ครอบคลุมสุดในคำสั่งเดียว):
@@ -84,6 +84,17 @@ rental-service เรียก product-service ต่อ (`GET /products/{id}`, 
 ด้วย path แยก `/rental/health`) ตอนนี้ยังไม่มีใครต้องใช้ health check ของ product-service ผ่าน gateway
 เลยยังไม่ได้เพิ่ม route ให้ — เช็คได้โดยตรงที่ `localhost:8082/health` (ข้าม Kong) ถ้าต้องการเพิ่ม
 public route ในอนาคตให้ตั้ง path ที่ไม่ซ้ำกับใคร เช่น `/product/health`
+
+### docs (Swagger UI — ไม่ใช่ backend service จริง)
+
+| Path | ต้องมี JWT? |
+|---|---|
+| `GET /docs` | ไม่ (public) — เสิร์ฟ Swagger UI จาก container `docs` (image `swaggerapi/swagger-ui`) |
+
+`docs` เป็น container แยกที่ mount spec จาก `docs/openapi/*.yaml` เข้ามาแสดงผล ไม่ใช่ business
+logic service ตั้ง `BASE_URL=/docs` ในตัว container เอง ดังนั้น route นี้ต้องใช้
+**`strip_path: false`** (ต่างจาก service อื่นที่ strip path ออก) ไม่งั้น asset (JS/CSS) ของหน้า
+UI จะหาไฟล์ไม่เจอ
 
 ## ข้อควรรู้ก่อนแก้ไข
 
