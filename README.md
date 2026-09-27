@@ -82,6 +82,12 @@ docker compose up -d --build
 docker compose ps    # user-service, user-db, product-service, product-db, rental-service, rental-db, docs, kong ต้อง healthy/running
 ```
 
+> ถ้า service ไหน exit ไปเองตอนเพิ่ง `up` ครั้งแรก (เช็คด้วย `docker compose ps -a`) — ส่วนใหญ่เป็นเพราะ
+> Postgres ของมันยัง "starting up" ไม่ทันตอน service เริ่ม migrate สั่ง `docker compose up -d <service>`
+> ซ้ำอีกรอบพอ และถ้ายิง endpoint แล้วได้ `503`/`name resolution failed` ทั้งที่ container ที่ควรตอบ
+> รันอยู่จริง — Kong cache DNS ไว้ตั้งแต่ตอน container นั้นยังไม่ขึ้น สั่ง
+> `docker compose restart kong` แก้ได้
+
 ตรวจสอบว่าระบบทำงานผ่าน Kong:
 
 ```bash
