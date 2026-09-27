@@ -12,7 +12,8 @@
 | วิษณุพงศ์ บัวเขียว | 67114540509 | `rental-service` (ระบบจัดการการเช่า) |
 | สุรเชษฐ์ สีสา | 67114540583 | `user-service` (ระบบจัดการผู้ใช้งาน JWT & RBAC) |
 
-**สถานะเอกสาร:** ฉบับร่าง v1 — รอทีมรีวิวและยืนยันร่วมกัน
+**สถานะเอกสาร:** ✅ ยืนยันแล้วทั้งหมด — ทีมรีวิวและยืนยันครบทุกข้อ ทั้ง 3 service implement,
+merge เข้า `main`, และทดสอบผ่านแล้ว (ดู Changelog และ Checklist ท้ายเอกสาร)
 
 ---
 
@@ -383,7 +384,7 @@ rental-service สั่งเปลี่ยน (rental-service ยังคง
 > (ต่างจากตอนถูกเรียกโดย client จริงผ่าน Kong ซึ่งจะมี `Authorization: Bearer` แนบมาตามปกติ) — สิทธิ์ "Authenticated"
 > และ "Internal" ในตารางข้างต้นจึงหมายถึงคนละเส้นทางการเรียก ไม่ใช่ endpoint เดียวที่ต้องมีทั้งสองอย่างพร้อมกัน
 
-### 8.3 rental-service (เจ้าของ: วิษณุพงศ์) — ⏳ ร่าง รอเจ้าของยืนยัน
+### 8.3 rental-service (เจ้าของ: วิษณุพงศ์) — ✅ ยืนยันแล้ว
 
 | Method | Path | สิทธิ์ | หน้าที่ |
 |---|---|---|---|
@@ -601,19 +602,22 @@ equipment-rental-system/
 | v2 | 2026-09-21 | เพิ่ม Kong API Gateway เป็น single entry point, ย้าย JWT verify ไป gateway | สุรเชษฐ์ |
 | v3 | 2026-09-26 | รับ rental-service เข้า docker-compose/Kong (`/rental/health`), แก้ endpoint table §8.3, เพิ่มข้อกำหนด atomic update ให้ §8.2 | สุรเชษฐ์ |
 | v4 | 2026-09-26 | ยืนยัน endpoint product-service (ข้อ 8.2), แก้ `PATCH /products/{id}/status` ให้เป็น atomic ตามข้อกำหนดที่เพิ่มใน v3, เพิ่ม `product-service`/`product-db` เข้า root `docker-compose.yml` และ `kong.depends_on` | เอกพล |
+| v5 | 2026-09-27 | ยืนยัน endpoint rental-service (ข้อ 8.3) ครบตามที่ implement จริง — เจ้าของทุก service ยืนยันครบทุกข้อใน Checklist แล้ว ปิดสถานะเอกสารเป็นยืนยันแล้วทั้งหมด | สุรเชษฐ์ |
 
 ---
 
 ## ✅ Checklist ให้ทีมยืนยันร่วมกัน
 
-- [ ] พอร์ตและชื่อ service (ข้อ 1)
-- [ ] ค่า `JWT_SECRET` / `INTERNAL_API_KEY` ร่วมกัน (ข้อ 2)
-- [ ] รูปแบบ response envelope + รหัส error (ข้อ 4)
-- [ ] ยืนยันว่า product/rental ไม่ต้อง verify signature เอง — Kong ตรวจให้แล้วผ่าน `jwt` plugin, service แค่ decode claims (ข้อ 5.3)
-- [ ] ยืนยันการใช้ Kong เป็น entry point + ย้าย JWT verify ไป gateway (ข้อ 1, 5.2, 5.3, 9.2)
-- [ ] ตารางสิทธิ์ RBAC (ข้อ 6.2)
-- [ ] ใครอัปเดตสถานะสินค้าตอนเช่า/คืน — product หรือ rental (ข้อ 7.1)
+ทุกข้อยืนยันครบแล้ว (v5) — ตรวจกับโค้ดจริงที่ merge เข้า `main` และทดสอบผ่านทั้งหมดแล้ว
+
+- [x] พอร์ตและชื่อ service (ข้อ 1) — ยืนยันแล้ว ตรงกับ `docker-compose.yml`/`deploy/kong/kong.yml` จริง (8081/8082/8083 + Kong `:8000`)
+- [x] ค่า `JWT_SECRET` / `INTERNAL_API_KEY` ร่วมกัน (ข้อ 2) — ยืนยันแล้ว ตรงกับ `.env.example` และใช้ค่าเดียวกันทั้ง 3 service + `kong.yml`
+- [x] รูปแบบ response envelope + รหัส error (ข้อ 4) — ยืนยันแล้ว ทั้ง 3 service คืน `{success,data/error}` แบบเดียวกันจริง
+- [x] ยืนยันว่า product/rental ไม่ต้อง verify signature เอง — Kong ตรวจให้แล้วผ่าน `jwt` plugin, service แค่ decode claims (ข้อ 5.3) — ยืนยันแล้ว ทั้งสอง service ไม่ถือ `JWT_SECRET`
+- [x] ยืนยันการใช้ Kong เป็น entry point + ย้าย JWT verify ไป gateway (ข้อ 1, 5.2, 5.3, 9.2) — ยืนยันแล้ว รันจริงผ่าน `deploy/kong/kong.yml`
+- [x] ตารางสิทธิ์ RBAC (ข้อ 6.2) — ยืนยันแล้ว ตรงกับ middleware ของแต่ละ service จริง
+- [x] ใครอัปเดตสถานะสินค้าตอนเช่า/คืน — product หรือ rental (ข้อ 7.1) — ยืนยันแล้ว: rental-service เป็นคนสั่ง `PATCH /products/{id}/status` ที่ product-service (pattern reserve-then-compensate)
 - [x] เอกพลเติม endpoint product-service (ข้อ 8.2) — ยืนยันแล้ว พร้อมโค้ด (ดู `product-service/README.md`)
-- [ ] วิษณุพงศ์เติม endpoint rental-service (ข้อ 8.3)
+- [x] วิษณุพงศ์เติม endpoint rental-service (ข้อ 8.3) — ยืนยันแล้ว พร้อมโค้ด (ดู `rental-service/README.md`)
 - [x] เอกพลยืนยัน `PATCH /products/{id}/status` จะทำ atomic/conditional update ตามที่ระบุใหม่ในข้อ 8.2 — implement แล้วเฉพาะทิศทาง `→ rented` (ดู `product-service/internal/repository/product_repo.go`)
-- [ ] monorepo หรือ polyrepo (ข้อ 10.1)
+- [x] monorepo หรือ polyrepo (ข้อ 10.1) — ยืนยันแล้ว: ใช้ monorepo เดียวตามที่เป็นอยู่
