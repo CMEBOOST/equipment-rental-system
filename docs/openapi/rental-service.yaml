@@ -320,9 +320,12 @@ components:
         id: { type: string, format: uuid }
         user_id: { type: string, format: uuid }
         product_id: { type: string, format: uuid }
-        start_date: { type: string, format: date }
-        due_date: { type: string, format: date }
-        return_date: { type: string, format: date, nullable: true }
+        start_date:
+          type: string
+          format: date-time
+          description: ส่งเป็น "YYYY-MM-DD" ตอน request แต่ response คืนเป็น RFC3339 datetime เต็ม (เวลาจะเป็น 00:00:00Z เสมอ)
+        due_date: { type: string, format: date-time }
+        return_date: { type: string, format: date-time, nullable: true }
         total_price:
           type: number
           format: double

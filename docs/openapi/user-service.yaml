@@ -619,6 +619,10 @@ components:
         role: { type: string, enum: [admin, staff, customer] }
         is_active: { type: boolean }
         created_at: { type: string, format: date-time }
+        updated_at:
+          type: string
+          format: date-time
+          description: ไม่มีใน response ของ POST /auth/register (มีแค่ created_at ตอนนั้น) แต่มีใน endpoint อื่นที่คืน User
     TokenPair:
       type: object
       properties:
