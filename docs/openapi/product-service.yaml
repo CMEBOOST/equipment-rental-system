@@ -1,0 +1,350 @@
+openapi: 3.0.3
+info:
+  title: product-service API
+  description: >
+    ระบบจัดการสินค้าและหมวดหมู่. เรียกผ่าน Kong (`/api/v1/products`,
+    `/api/v1/categories`) — token ที่ Kong ตรวจ signature/expiry แล้ว
+    product-service แค่ decode payload อ่าน role ไม่ verify signature ซ้ำ
+    (ดู CONTRACT.md §5.3, §8.2 และ product-service/README.md).
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8000
+    description: ผ่าน Kong API Gateway (ทางที่ client ควรใช้)
+  - url: http://localhost:8082
+    description: ยิงตรง container (เฉพาะ debug ไม่ผ่าน Kong — รวม /health ที่ไม่มี route ผ่าน Kong)
+
+tags:
+  - name: products
+  - name: categories
+  - name: health
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: เช็คสถานะบริการ (ไม่มี route ผ่าน Kong โดยตั้งใจ — เช็คตรงที่ :8082/health เท่านั้น)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          status: { type: string, example: ok }
+                          service: { type: string, example: product-service }
+                          db: { type: string, example: up }
+
+  /api/v1/products:
+    get:
+      tags: [products]
+      summary: รายการสินค้า (ทุก role ที่ login แล้ว)
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: ค้นหาจากชื่อสินค้า
+        - in: query
+          name: category_id
+          schema: { type: string, format: uuid }
+        - in: query
+          name: status
+          schema: { $ref: "#/components/schemas/ProductStatus" }
+        - in: query
+          name: sort
+          schema: { type: string }
+        - in: query
+          name: order
+          schema: { type: string, enum: [asc, desc] }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200": { $ref: "#/components/responses/PaginatedProductList" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [products]
+      summary: เพิ่มสินค้า (admin, staff)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateProductRequest" }
+      responses:
+        "201":
+          description: สร้างสำเร็จ
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Product" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/products/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProductId"
+    get:
+      tags: [products]
+      summary: รายละเอียดสินค้า
+      description: >
+        เมื่อถูกเรียกจาก rental-service (service-to-service) จะมาพร้อม
+        `X-Internal-Key` เท่านั้น ไม่มี Authorization: Bearer แนบมาด้วย
+      security:
+        - bearerAuth: []
+        - internalApiKey: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Product" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [products]
+      summary: แก้ไขสินค้า (admin, staff, partial update)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateProductRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Product" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [products]
+      summary: ลบสินค้า (admin, soft delete)
+      responses:
+        "200": { $ref: "#/components/responses/OkMessage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: CONFLICT — ลบสินค้าที่สถานะ rented ไม่ได้
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/products/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/ProductId"
+    patch:
+      tags: [products]
+      summary: เปลี่ยนสถานะสินค้า
+      description: >
+        เรียกได้ 2 ทาง: admin/staff ผ่าน Bearer token (ผ่าน Kong) หรือ
+        rental-service เรียกตรงด้วย X-Internal-Key (ข้าม Kong). ทิศทาง
+        `→ rented` เป็น atomic/conditional update (compare-and-swap บน
+        `status = 'available'`) กัน race condition — ถ้าสถานะไม่ตรงที่คาดจะได้
+        `409 CONFLICT`. ทิศทาง `→ available` เป็น idempotent เสมอ
+      security:
+        - bearerAuth: []
+        - internalApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/ProductStatus" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/Product" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: CONFLICT — สินค้าไม่ได้อยู่ในสถานะที่คาดไว้ (compare-and-swap ล้มเหลว)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/categories:
+    get:
+      tags: [categories]
+      summary: รายการหมวดหมู่ (seed จาก migration ยังไม่มี endpoint สร้าง/แก้)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Category" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Kong ตรวจ signature/expiry แล้ว — product-service แค่ decode payload
+    internalApiKey:
+      type: apiKey
+      in: header
+      name: X-Internal-Key
+      description: ใช้เมื่อ rental-service เรียกตรง (ไม่ผ่าน Kong, ไม่มี Bearer token แนบมา)
+
+  parameters:
+    ProductId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 20 }
+
+  responses:
+    OkMessage:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/SuccessEnvelope"
+              - properties:
+                  data:
+                    type: object
+                    properties:
+                      message: { type: string }
+    ValidationError:
+      description: VALIDATION_ERROR
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Unauthenticated:
+      description: UNAUTHENTICATED
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Forbidden:
+      description: FORBIDDEN
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    NotFound:
+      description: NOT_FOUND
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    PaginatedProductList:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/SuccessEnvelope"
+              - properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Product" }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+
+  schemas:
+    SuccessEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: {}
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string }
+            details: { nullable: true }
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+    ProductStatus:
+      type: string
+      enum: [available, rented, maintenance]
+      description: >
+        maintenance เป็นการเพิ่มของ product-service เอง (ปิดซ่อมชั่วคราว)
+        ไม่ใช่ส่วนหนึ่งของ flow เช่า/คืนที่ rental-service สั่งเปลี่ยน
+    Category:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+    Product:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        category_id: { type: string, format: uuid }
+        category: { type: string, description: ชื่อหมวดหมู่ (join มาให้ ไม่ต้องเรียกซ้ำ) }
+        name: { type: string }
+        description: { type: string }
+        price_per_day: { type: number, format: double }
+        status: { $ref: "#/components/schemas/ProductStatus" }
+        image_url: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateProductRequest:
+      type: object
+      required: [category_id, name, price_per_day]
+      properties:
+        category_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 150 }
+        description: { type: string, maxLength: 10000 }
+        price_per_day: { type: number, format: double, minimum: 0, exclusiveMinimum: true }
+        image_url: { type: string, maxLength: 255 }
+    UpdateProductRequest:
+      type: object
+      properties:
+        category_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 150 }
+        description: { type: string, maxLength: 10000 }
+        price_per_day: { type: number, format: double, minimum: 0, exclusiveMinimum: true }
+        image_url: { type: string, maxLength: 255 }

@@ -1,0 +1,633 @@
+openapi: 3.0.3
+info:
+  title: user-service API
+  description: >
+    ระบบจัดการผู้ใช้งาน (JWT & RBAC) — สมัคร/เข้าสู่ระบบ, จัดการโปรไฟล์ตัวเอง,
+    จัดการผู้ใช้และบทบาท (admin/staff/customer). เรียกผ่าน Kong (`/api/v1/*`)
+    ยกเว้น `/health`. ดู CONTRACT.md §8.1 และ user-service/README.md สำหรับรายละเอียดเพิ่มเติม.
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8000
+    description: ผ่าน Kong API Gateway (ทางที่ client ควรใช้)
+  - url: http://localhost:8081
+    description: ยิงตรง container (เฉพาะ debug ไม่ผ่าน Kong)
+
+tags:
+  - name: auth
+    description: สมัคร/เข้าสู่ระบบ/ต่ออายุ token
+  - name: me
+    description: จัดการบัญชีตัวเอง
+  - name: users
+    description: จัดการผู้ใช้งาน (admin/staff เท่านั้น)
+  - name: roles
+  - name: health
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: เช็คสถานะบริการ (public)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          status: { type: string, example: ok }
+                          service: { type: string, example: user-service }
+                          db: { type: string, example: up }
+
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: สมัครสมาชิก (ได้ role customer เสมอ)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, username, password]
+              properties:
+                email: { type: string, format: email, maxLength: 255 }
+                username: { type: string, minLength: 3, maxLength: 50 }
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 72
+                  description: ต้องมีทั้งตัวอักษรและตัวเลข
+                full_name: { type: string, maxLength: 120 }
+                phone: { type: string, maxLength: 20 }
+      responses:
+        "201":
+          description: สมัครสำเร็จ
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "409":
+          description: อีเมล/username ซ้ำ (EMAIL_ALREADY_EXISTS / USERNAME_ALREADY_EXISTS)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: WEAK_PASSWORD
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: เข้าสู่ระบบ
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: คืน access_token (15 นาที) + refresh_token (opaque, 7 วัน)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401":
+          description: INVALID_CREDENTIALS
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: ACCOUNT_DISABLED
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: ออก access token ใหม่ (หมุน refresh token ใหม่ด้วย)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/TokenPair" }
+        "401":
+          description: INVALID_REFRESH_TOKEN
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: ออกจากระบบ (revoke session/refresh token นั้น)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/OkMessage" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/auth/verify:
+    post:
+      tags: [auth]
+      summary: ตรวจ access token (สำหรับ service อื่นเรียก ไม่ใช่ client)
+      description: >
+        เรียกด้วย `X-Internal-Key` เท่านั้น ไม่ใช้ Bearer token — ใช้โดย
+        rental-service เพื่อยืนยันว่าบัญชียัง active อยู่ก่อนอนุมัติ/สร้างรายการเช่า
+      security:
+        - internalApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, description: access token ที่จะตรวจ }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          active: { type: boolean }
+                          user_id: { type: string, format: uuid }
+                          email: { type: string }
+                          username: { type: string }
+                          role: { type: string, enum: [admin, staff, customer] }
+                          expires_at: { type: string, format: date-time }
+
+  /api/v1/me:
+    get:
+      tags: [me]
+      summary: ข้อมูลตัวเอง
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    put:
+      tags: [me]
+      summary: แก้ไขโปรไฟล์ตัวเอง (partial update)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name: { type: string, maxLength: 120 }
+                phone: { type: string, maxLength: 20 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/me/password:
+    put:
+      tags: [me]
+      summary: เปลี่ยนรหัสผ่านตัวเอง (revoke session อื่นทั้งหมด)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string, minLength: 8, maxLength: 72 }
+      responses:
+        "200": { $ref: "#/components/responses/OkMessage" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/me/login-logs:
+    get:
+      tags: [me]
+      summary: ประวัติการเข้าสู่ระบบของตัวเอง
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200": { $ref: "#/components/responses/PaginatedList" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/me/sessions:
+    get:
+      tags: [me]
+      summary: refresh token ที่ยัง active อยู่
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/users:
+    get:
+      tags: [users]
+      summary: รายชื่อผู้ใช้ทั้งหมด (admin)
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: ค้นหาจาก email/username/full_name
+        - in: query
+          name: role
+          schema: { type: string, enum: [admin, staff, customer] }
+        - in: query
+          name: is_active
+          schema: { type: boolean }
+        - in: query
+          name: sort
+          schema: { type: string }
+        - in: query
+          name: order
+          schema: { type: string, enum: [asc, desc] }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200": { $ref: "#/components/responses/PaginatedList" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [users]
+      summary: สร้างผู้ใช้ใหม่โดย admin (ตั้ง role ได้)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, username, password, role]
+              properties:
+                email: { type: string, format: email }
+                username: { type: string, minLength: 3, maxLength: 50 }
+                password: { type: string, minLength: 8, maxLength: 72 }
+                full_name: { type: string, maxLength: 120 }
+                phone: { type: string, maxLength: 20 }
+                role: { type: string, enum: [admin, staff, customer] }
+                is_active: { type: boolean, default: true }
+      responses:
+        "201":
+          description: สร้างสำเร็จ
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: EMAIL_ALREADY_EXISTS / USERNAME_ALREADY_EXISTS
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [users]
+      summary: ดูผู้ใช้คนเดียว (admin, staff)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/User" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [users]
+      summary: แก้ไขผู้ใช้ (admin, partial update)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string, format: email }
+                username: { type: string, minLength: 3, maxLength: 50 }
+                full_name: { type: string, maxLength: 120 }
+                phone: { type: string, maxLength: 20 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data: { $ref: "#/components/schemas/User" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [users]
+      summary: ลบผู้ใช้ (admin, soft delete)
+      responses:
+        "200": { $ref: "#/components/responses/OkMessage" }
+        "403":
+          description: FORBIDDEN — ห้ามลบบัญชีตัวเอง
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/users/{id}/role:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    patch:
+      tags: [users]
+      summary: เปลี่ยนบทบาทผู้ใช้ (admin, revoke session เดิม, ห้าม demote ตัวเอง)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [admin, staff, customer] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          role: { type: string }
+                          updated_at: { type: string, format: date-time }
+        "403":
+          description: FORBIDDEN — ห้าม demote ตัวเอง
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/users/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    patch:
+      tags: [users]
+      summary: เปิด/ปิดบัญชี (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_active]
+              properties:
+                is_active: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          is_active: { type: boolean }
+                          updated_at: { type: string, format: date-time }
+        "403":
+          description: FORBIDDEN — ห้ามปิดบัญชีตัวเอง
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/users/{id}/login-logs:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [users]
+      summary: ประวัติการเข้าสู่ระบบของผู้ใช้คนนี้ (admin)
+      parameters:
+        - in: query
+          name: success
+          schema: { type: boolean }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200": { $ref: "#/components/responses/PaginatedList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/roles:
+    get:
+      tags: [roles]
+      summary: รายชื่อ role ทั้งหมด (admin, staff)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessEnvelope" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: token ที่ได้จาก /auth/login หรือ /auth/refresh — Kong ตรวจ signature/expiry ให้ก่อนถึง service
+    internalApiKey:
+      type: apiKey
+      in: header
+      name: X-Internal-Key
+      description: ใช้เฉพาะเรียกระหว่าง service (ไม่ใช่ client) — ต้องตรงกับ INTERNAL_API_KEY
+
+  parameters:
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 20 }
+
+  responses:
+    OkMessage:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/SuccessEnvelope"
+              - properties:
+                  data:
+                    type: object
+                    properties:
+                      message: { type: string }
+    ValidationError:
+      description: VALIDATION_ERROR — body ไม่ผ่าน binding
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Unauthenticated:
+      description: UNAUTHENTICATED — ไม่มี token หรือ token ถอดรหัสไม่ได้
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Forbidden:
+      description: FORBIDDEN — role ไม่มีสิทธิ์
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    NotFound:
+      description: NOT_FOUND
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    PaginatedList:
+      description: OK (list พร้อม pagination)
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/SuccessEnvelope"
+              - properties:
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+
+  schemas:
+    SuccessEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: {}
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string }
+            details: { nullable: true }
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        username: { type: string }
+        full_name: { type: string }
+        phone: { type: string }
+        role: { type: string, enum: [admin, staff, customer] }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at:
+          type: string
+          format: date-time
+          description: ไม่มีใน response ของ POST /auth/register (มีแค่ created_at ตอนนั้น) แต่มีใน endpoint อื่นที่คืน User
+    TokenPair:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, description: อายุ access_token เป็นวินาที }
+        user: { $ref: "#/components/schemas/User" }

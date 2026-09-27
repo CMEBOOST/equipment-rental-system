@@ -112,6 +112,31 @@ services:
       retries: 5
     networks: [rental-net]
 
+  docs:
+    image: swaggerapi/swagger-ui:latest
+    container_name: docs
+    # Static Swagger UI serving the hand-written OpenAPI specs in
+    # docs/openapi/*.yaml (source of truth is CONTRACT.md + each service's
+    # own README). BASE_URL tells the image's nginx to serve everything
+    # under /docs/ so it works both directly (localhost:8090/docs/) and
+    # reverse-proxied by Kong at the same path — see the "docs" route in
+    # deploy/kong/kong.yml, which forwards /docs unchanged (strip_path:
+    # false) to match.
+    environment:
+      BASE_URL: /docs
+      URLS: >-
+        [
+          {"url": "user-service.yaml", "name": "user-service"},
+          {"url": "product-service.yaml", "name": "product-service"},
+          {"url": "rental-service.yaml", "name": "rental-service"}
+        ]
+    volumes:
+      - ./docs/openapi/user-service.yaml:/usr/share/nginx/html/user-service.yaml:ro
+      - ./docs/openapi/product-service.yaml:/usr/share/nginx/html/product-service.yaml:ro
+      - ./docs/openapi/rental-service.yaml:/usr/share/nginx/html/rental-service.yaml:ro
+    ports: ["8090:8080"]
+    networks: [rental-net]
+
   kong:
     image: kong:3.6
     container_name: kong
@@ -130,6 +155,7 @@ services:
       - user-service
       - rental-service
       - product-service
+      - docs
     networks: [rental-net]
 
 volumes:

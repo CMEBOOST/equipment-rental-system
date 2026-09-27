@@ -1,231 +1,162 @@
 # Equipment Rental System
 
-ระบบเช่าอุปกรณ์ — Backend (Go + PostgreSQL) สถาปัตยกรรม Microservices, มี **Kong API
-Gateway** เป็น single entry point หน้าทั้ง 3 service
+ระบบเช่าอุปกรณ์แบบ Backend-only เขียนด้วย **Go + PostgreSQL** สถาปัตยกรรม **Microservices**
+แยกเป็น 3 service อิสระต่อกัน (user, product, rental) แต่ละตัวมีฐานข้อมูลเป็นของตัวเอง
+และมี **Kong API Gateway** เป็น single entry point ให้ client เรียกเข้ามาทางเดียว
 
 ## สมาชิกและความรับผิดชอบ
 
 | สมาชิก | รหัสนักศึกษา | Service | โฟลเดอร์ | สถานะ |
 |---|---|---|---|---|
 | สุรเชษฐ์ สีสา | 67114540583 | ระบบจัดการผู้ใช้งาน (JWT & RBAC) + Kong Gateway | `user-service/`, `deploy/kong/` | ✅ เสร็จแล้ว |
-| เอกพล แรกเรียง | 67114540666 | ระบบจัดการสินค้า | `product-service/` | ⏳ ยังไม่เริ่ม (มีแค่ README) |
+| เอกพล แรกเรียง | 67114540666 | ระบบจัดการสินค้า | `product-service/` | ✅ เสร็จแล้ว |
 | วิษณุพงศ์ บัวเขียว | 67114540509 | ระบบจัดการการเช่า | `rental-service/` | ✅ เสร็จแล้ว |
 
-## Architecture
+## คุณสมบัติหลัก
+
+- **จัดการผู้ใช้งานและสิทธิ์ (user-service)** — สมัคร/เข้าสู่ระบบด้วย JWT (access + refresh
+  token), RBAC 3 ระดับ (`admin` / `staff` / `customer`), จัดการบัญชี/บทบาท/เปิด-ปิดผู้ใช้,
+  ประวัติการเข้าสู่ระบบ
+- **จัดการสินค้า (product-service)** — CRUD สินค้าและหมวดหมู่, ค้นหา/กรอง/แบ่งหน้า, สถานะสินค้า
+  3 แบบ (`available` / `rented` / `maintenance`) พร้อม atomic status update กัน race condition
+  ตอนมีคนเช่าสินค้าชิ้นเดียวกันพร้อมกัน
+- **จัดการการเช่า (rental-service)** — ลูกค้าขอเช่าเอง หรือ staff สร้างแทนได้, อนุมัติ/คืนสินค้า,
+  คำนวณราคาอัตโนมัติจากจำนวนวัน, ผูกสถานะสินค้าที่ product-service ให้ตรงกับสถานะการเช่าเสมอ
+- **API Gateway (Kong)** — ตรวจ JWT signature/expiry ให้ทุก protected route ก่อนส่งต่อไปยัง
+  service ปลายทาง ทำให้ service ภายในไม่ต้องถือ secret ร่วมกัน
+- **Docker Compose** พร้อมใช้งานทั้งระบบด้วยคำสั่งเดียว รวม migration อัตโนมัติและ seed
+  บัญชี admin/staff เริ่มต้น
+
+## สถาปัตยกรรม
 
 ```
-Client ──► Kong (proxy :8000) ──► user-service    :8081  (JWT_SECRET, ตรวจ token ให้ทุก service)
-                               ├─► product-service :8082  (decode-only, ไม่ถือ secret) ⏳
-                               └─► rental-service  :8083  (decode-only, ไม่ถือ secret) ✅
+Client ──► Kong (proxy :8000) ──► user-service    :8081  (ถือ JWT_SECRET, ออก token)
+                               ├─► product-service :8082  (decode-only, ไม่ถือ secret)
+                               └─► rental-service  :8083  (decode-only, ไม่ถือ secret)
 
-rental-service ──► product-service   : เรียกตรง ไม่ผ่าน Kong (service-to-service)
-rental-service ──► user-service (/auth/verify) : เรียกตรง ไม่ผ่าน Kong
+rental-service ──► product-service               : เรียกตรง ไม่ผ่าน Kong (service-to-service)
+rental-service ──► user-service (/auth/verify)   : เรียกตรง ไม่ผ่าน Kong
 ```
 
-- **Client เรียกผ่าน Kong (`:8000`) เท่านั้น** สำหรับ flow ปกติ — Kong ตรวจ JWT
-  signature/expiry ให้ทุก protected route ก่อนถึง service ปลายทาง พอร์ต 8081-8083 ยัง
-  เปิดไว้เพื่อ debug ตรงเฉยๆ ไม่ใช่ทางที่ client ควรใช้
-- **user-service เท่านั้นที่ถือ `JWT_SECRET`** และเป็นคนออก token — rental-service (และ
-  product-service เมื่อมีโค้ดแล้ว) แค่ decode payload อ่าน claims เอา ไม่ต้อง verify
-  signature ซ้ำ (ดู [CONTRACT.md §5.3](CONTRACT.md))
-- Kong รันแบบ **DB-less** (ไม่มี Kong Postgres/Admin API) — config อยู่ที่
-  [deploy/kong/kong.yml](deploy/kong/kong.yml) ไฟล์เดียว
+- **Client เรียกผ่าน Kong (`:8000`) เท่านั้น** — Kong ตรวจ JWT signature/expiry ให้ทุก
+  protected route ก่อนถึง service ปลายทาง พอร์ต 8081-8083 เปิดไว้เพื่อ debug ตรงเท่านั้น
+- **user-service เท่านั้นที่ถือ `JWT_SECRET`** และเป็นคนออก token — product-service และ
+  rental-service แค่ decode payload อ่าน claims เอา ไม่ต้อง verify signature ซ้ำ
+- แต่ละ service มีฐานข้อมูล PostgreSQL เป็นของตัวเอง ไม่มี FK ข้าม database
+- Kong รันแบบ **DB-less** (ไม่มี Kong Postgres/Admin API) — config อยู่ในไฟล์เดียวคือ
+  [deploy/kong/kong.yml](deploy/kong/kong.yml)
 
-## โครงสร้าง repo (monorepo)
+## Tech Stack
+
+- **ภาษา/Framework:** Go, [Gin](https://github.com/gin-gonic/gin), [GORM](https://gorm.io)
+- **ฐานข้อมูล:** PostgreSQL 16, migration ด้วย [golang-migrate](https://github.com/golang-migrate/migrate)
+- **API Gateway:** [Kong](https://konghq.com/) (DB-less mode)
+- **Auth:** JWT (HS256), bcrypt password hashing
+- **Infra:** Docker / Docker Compose
+
+## โครงสร้างโปรเจกต์
 
 ```
 equipment-rental-system/
-├── user-service/       # :8081  → user-db      ✅ เสร็จแล้ว 20 endpoints
-├── product-service/    # :8082  → product-db   ⏳ ยังไม่มีโค้ด
-├── rental-service/      # :8083  → rental-db    ✅ เสร็จแล้ว
+├── user-service/       # :8081 → user-db     — auth, users, roles (20 endpoints)
+├── product-service/    # :8082 → product-db  — สินค้าและหมวดหมู่
+├── rental-service/     # :8083 → rental-db   — คำขอเช่า/อนุมัติ/คืนสินค้า
 ├── deploy/
-│   └── kong/            # kong.yml, smoke-test.sh, rental-smoke-test.sh, README
+│   └── kong/            # kong.yml + smoke test scripts + README
 ├── docs/
+│   ├── openapi/          # OpenAPI spec ของทั้ง 3 service — เสิร์ฟเป็น Swagger UI ผ่าน Kong ที่ /docs
 │   ├── user-management-service-design.md
-│   └── superpowers/     # plans/specs ที่ใช้ implement (เก็บไว้เป็น record)
-├── CONTRACT.md          # ⚠️ ข้อตกลงกลางของทีม — อ่านก่อนเริ่มโค้ด
+│   └── superpowers/     # เอกสารออกแบบ/แผนการ implement
+├── CONTRACT.md          # ข้อตกลงระหว่าง service (พอร์ต, JWT, response format, RBAC)
 ├── .env.example
-└── docker-compose.yml   # ตอนนี้มี user-service + rental-service + kong (product-service ยังไม่เข้า)
+└── docker-compose.yml   # รันครบทั้ง 3 service + Kong ด้วยคำสั่งเดียว
 ```
 
-## เริ่มต้น
+## เริ่มต้นใช้งาน
+
+**Requirements:** Docker และ Docker Compose
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
-docker compose ps                          # user-service, user-db, kong, rental-service, rental-db ต้อง healthy/running
-curl http://localhost:8000/health          # ผ่าน Kong -> 200 (user-service)
-curl http://localhost:8000/rental/health   # ผ่าน Kong -> 200 (rental-service)
-./deploy/kong/smoke-test.sh                # user-service ผ่าน Kong -> 6 passed, 0 failed
-./deploy/kong/rental-smoke-test.sh         # rental-service ผ่าน Kong -> 8 passed, 0 failed
+docker compose ps    # user-service, user-db, product-service, product-db, rental-service, rental-db, docs, kong ต้อง healthy/running
 ```
 
-รายละเอียดแต่ละ service:
-- [user-service/README.md](user-service/README.md) — endpoint ทั้ง 20 ทาง, env vars, วิธีรัน/เทส
-- [rental-service/README.md](rental-service/README.md) — endpoint ของระบบเช่า, การทำงานร่วมกับ product/user-service
-- [deploy/kong/README.md](deploy/kong/README.md) — path ที่ Kong รู้จัก, วิธีทดสอบผ่าน gateway
-
-## เอกสาร
-
-- [CONTRACT.md](CONTRACT.md) — ข้อตกลงกลาง (พอร์ต, JWT, response format, RBAC, endpoint ภายใน, docker-compose)
-- [docs/user-management-service-design.md](docs/user-management-service-design.md) — เอกสารออกแบบ user-service
-- [docs/superpowers/specs/2026-09-18-kong-api-gateway-design.md](docs/superpowers/specs/2026-09-18-kong-api-gateway-design.md) — เอกสารออกแบบ Kong Gateway
-
-## เมื่อ product-service เริ่มมีโค้ดจริง
-
-rental-service ทำตามขั้นตอนนี้สำเร็จไปแล้ว (ดู [PR #4](https://github.com/CMEBOOST/equipment-rental-system/pull/4)
-เป็นตัวอย่างจริง) เหลือแค่ product-service ที่ยังต้องทำ — ทำตามลำดับนี้:
-
-### 1. เขียน service ตาม CONTRACT.md ก่อน
-
-- อ่าน endpoint ที่ต้อง expose: [CONTRACT.md §8.2](CONTRACT.md) — path, method, สิทธิ์ต่อ role ตามตารางนั้น
-- **วิธีตรวจ JWT (สำคัญ):** อ่าน [CONTRACT.md §5.3](CONTRACT.md) — service คุณ **ไม่ต้อง
-  ถือ `JWT_SECRET` และไม่ต้อง verify signature เอง** เพราะ Kong ตรวจให้แล้วก่อน request
-  จะมาถึง แค่:
-  1. อ่าน header `Authorization: Bearer <token>` (Kong forward มาให้ ไม่ตัดออก)
-  2. Decode ส่วน payload (base64) อ่าน claims `sub`/`role`/`email` — **ห้าม verify
-     signature ซ้ำ** (ไม่มี secret จะ verify ก็ทำไม่ได้อยู่แล้ว)
-  3. ใช้ `role`/`sub` บังคับสิทธิ์ตาม RBAC table ที่ [CONTRACT.md §6](CONTRACT.md)
-  4. ถ้าต้องมั่นใจว่าบัญชียัง active/ไม่ถูกแบน (เช่น ก่อนยืนยันการเช่า) ค่อยเรียก
-     `POST http://user-service:8081/api/v1/auth/verify` (ตรงข้าม container ไม่ผ่าน Kong,
-     ใส่ header `X-Internal-Key`) — ไม่ต้องเรียกทุก request
-- Database: DB แยกของตัวเอง ห้ามต่อ DB ของคนอื่นตรง, ห้าม FK ข้าม DB (ดู
-  [CONTRACT.md §3](CONTRACT.md)) — ตัวแปร DB มา prefix ไว้แล้วใน `.env.example`
-  (`PRODUCT_DB_*`)
-- **สำคัญสำหรับ product-service โดยเฉพาะ:** rental-service เรียก `GET /products/{id}` และ
-  `PATCH /products/{id}/status` ด้วย `X-Internal-Key` เท่านั้น **ไม่มี** `Authorization: Bearer`
-  แนบมาด้วย (rental-service ไม่ forward token ของ user ต่อ) — endpoint สองตัวนี้ต้องรับ
-  internal key เดี่ยวๆ ได้ ไม่ใช่บังคับ Bearer token เหมือน endpoint ทั่วไป (ดู
-  [CONTRACT.md §8.2](CONTRACT.md) ที่แก้ไว้แล้ว) และ `PATCH /products/{id}/status` ต้องทำ
-  **atomic/conditional update** (compare-and-swap บน `status`) ตอนเปลี่ยนเป็น `rented` ด้วย
-  กัน race condition ตอนมีคนเช่าพร้อมกัน 2 คน — `→available` ทำแบบ idempotent ได้เลย ไม่ต้อง
-  compare-and-swap
-- Response format ต้องตรงกับ [CONTRACT.md §4](CONTRACT.md) (envelope
-  `{success,data/error}`, `snake_case`, ISO 8601 UTC)
-- ทำ Dockerfile ของ service ตัวเอง — ดู `user-service/Dockerfile` เป็นตัวอย่าง (multi-stage
-  build, ไม่ต้อง root)
-
-### 2. เพิ่มเข้า root `docker-compose.yml`
-
-เพิ่ม service + db ของตัวเอง ตามแพทเทิร์นเดียวกับ `user-service`/`rental-service` ที่มีอยู่แล้ว
-(ตัวแปร `PRODUCT_APP_PORT`/`PRODUCT_DB_*` มีอยู่ใน `.env.example` แล้ว รอแค่ service block):
-
-```yaml
-  product-service:
-    build: ./product-service
-    container_name: product-service
-    ports: ["8082:8082"]
-    env_file: [./.env]
-    environment:
-      APP_PORT: ${PRODUCT_APP_PORT}
-      DB_HOST: ${PRODUCT_DB_HOST}
-      DB_PORT: ${PRODUCT_DB_PORT}
-      DB_USER: ${PRODUCT_DB_USER}
-      DB_PASSWORD: ${PRODUCT_DB_PASSWORD}
-      DB_NAME: ${PRODUCT_DB_NAME}
-    depends_on:
-      product-db:
-        condition: service_healthy
-    networks: [rental-net]
-
-  product-db:
-    image: postgres:16-alpine
-    container_name: product-db
-    environment:
-      POSTGRES_USER: ${PRODUCT_DB_USER}
-      POSTGRES_PASSWORD: ${PRODUCT_DB_PASSWORD}
-      POSTGRES_DB: ${PRODUCT_DB_NAME}
-    volumes: ["product-db-data:/var/lib/postgresql/data"]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PRODUCT_DB_USER} -d ${PRODUCT_DB_NAME}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks: [rental-net]
-```
-
-อย่าลืมเพิ่ม `product-db-data:` เข้า `volumes:` ท้ายไฟล์ด้วย
-
-### 3. เพิ่มชื่อ service เข้า Kong's `depends_on`
-
-ใน `docker-compose.yml`'s `kong:` block เพิ่มชื่อ service ตัวเองเข้า `depends_on:`
-(ตอนนี้มี `user-service` กับ `rental-service`):
-
-```yaml
-    depends_on:
-      - user-service
-      - rental-service
-      - product-service   # เพิ่มตอนที่ service มีโค้ดจริงแล้ว
-```
-
-### 4. ตั้ง health route ผ่าน Kong ให้ไม่ชนกัน
-
-**สำคัญ:** `deploy/kong/kong.yml` **ไม่มี** route `/health` ให้ `product-service`
-ตอนนี้โดยตั้งใจ — เพราะถ้าประกาศ path `/health` แบบเดียวกันซ้ำกันหลาย service Kong จะ route
-ผิดไปที่ service อื่น (เจอบั๊กนี้มาแล้วจริงตอน implement Kong ตอนแรก — rental-service แก้ไปแล้ว
-ด้วย route `/rental/health` แยกต่างหาก ดู [deploy/kong/kong.yml](deploy/kong/kong.yml) เป็นตัวอย่างจริง)
-
-ให้เพิ่ม route health ของตัวเองด้วย **path ที่ไม่ซ้ำกับใคร** เช่น:
-
-```yaml
-  - name: product-service
-    url: http://product-service:8082
-    routes:
-      - name: product-public
-        paths:
-          - /product/health        # ห้ามใช้ "/health" ตรงๆ ซ้ำกับ user-service
-        strip_path: false
-      - name: product-protected     # อันนี้มีอยู่แล้ว ไม่ต้องแก้
-        paths:
-          - /api/v1/products
-          - /api/v1/categories
-        strip_path: false
-        plugins:
-          - name: jwt
-            config:
-              claims_to_verify: ["exp"]
-              run_on_preflight: false
-```
-
-`product-protected` (route หลักที่ใช้งานจริง) **มีอยู่แล้วครบ** ใน
-kong.yml ไม่ต้องเพิ่ม — แค่เพิ่ม public health route เท่านั้น
-
-### 5. ทดสอบก่อนเปิด PR
+ตรวจสอบว่าระบบทำงานผ่าน Kong:
 
 ```bash
-docker compose up -d --build
-docker compose up -d --force-recreate kong   # ให้ Kong โหลด kong.yml ที่แก้ใหม่
-curl http://localhost:8000/product/health    # ต้องได้ 200 จาก service ตัวเอง (ไม่ใช่ 503)
-curl http://localhost:8000/api/v1/products    # ไม่มี token -> 401 จาก Kong เอง
+curl http://localhost:8000/health          # -> 200 (user-service)
+curl http://localhost:8000/rental/health   # -> 200 (rental-service)
+curl http://localhost:8000/api/v1/products # -> 401 ไม่มี token (product-service ยังไม่มี public /health route แยก ดู deploy/kong/README.md)
 ```
 
-รัน `./deploy/kong/smoke-test.sh` และ `./deploy/kong/rental-smoke-test.sh` อีกครั้งด้วย —
-ต้องยังผ่าน 6/6 และ 8/8 เหมือนเดิม (ไม่มีอะไรพัง) เขียน `deploy/kong/product-smoke-test.sh`
-ของตัวเองเพิ่มด้วยก็ได้ ตามแบบ `rental-smoke-test.sh`
+เปิด **Swagger UI** ที่ <http://localhost:8000/docs/> (เลือก service จาก dropdown มุมบนขวา) เพื่อดู/ทดลองยิง
+API จริงของทั้ง 3 service ผ่าน Kong ได้ทันที — spec อยู่ที่ `docs/openapi/*.yaml`
 
-### 6. เปิด PR
+รัน smoke test ทั้งระบบ:
 
-- ถ้าแก้ `CONTRACT.md` / `docker-compose.yml` / `deploy/kong/kong.yml` → **แจ้งกลุ่มก่อน**
-  แล้วขอให้ทุกคน approve ก่อน merge (กระทบ endpoint ที่คนอื่นเรียกใช้ — ดู
-  [CONTRACT.md §10.3](CONTRACT.md))
-- อัปเดต checklist ท้าย `CONTRACT.md` ให้ตรงกับสถานะจริง (เปลี่ยนจาก "⏳ ร่าง" เป็น
-  "✅ ยืนยันแล้ว" ตรงหัวข้อ 8.2 และยืนยันข้อ atomic update ที่ระบุไว้)
+```bash
+./deploy/kong/smoke-test.sh                     # user-service ผ่าน Kong
+./deploy/kong/rental-smoke-test.sh              # rental-service ผ่าน Kong
+./deploy/kong/product-rental-e2e-smoke-test.sh  # flow เต็ม: rent -> approve -> return ข้ามทั้ง 3 service
+```
+
+user-service seed บัญชี admin/staff เริ่มต้นไว้ให้แล้ว (ดูรหัสผ่านที่
+[user-service/README.md](user-service/README.md#บัญชี-adminstaff-เริ่มต้น-seed-มาให้แล้ว))
+ใช้ login เพื่อขอ token แล้วเรียก endpoint อื่นต่อได้ทันที:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@equipment-rental.local","password":"Admin123!"}'
+```
+
+## เอกสาร API
+
+ทุก response ใช้ envelope เดียวกัน: `{"success":true,"data":...}` หรือ
+`{"success":false,"error":{"code","message","details"}}` (list เพิ่ม `"meta":{"page","limit","total","total_pages"}`)
+
+| Service | Base path (ผ่าน Kong) | สรุป | รายละเอียด |
+|---|---|---|---|
+| user-service | `/api/v1/auth/*`, `/api/v1/me`, `/api/v1/users`, `/api/v1/roles` | สมัคร/login/refresh, จัดการโปรไฟล์, จัดการผู้ใช้และบทบาท (admin/staff/customer) | [user-service/README.md](user-service/README.md) |
+| product-service | `/api/v1/products`, `/api/v1/categories` | CRUD สินค้า/หมวดหมู่, ค้นหา/กรอง/แบ่งหน้า, เปลี่ยนสถานะสินค้า | [product-service/README.md](product-service/README.md) |
+| rental-service | `/api/v1/rentals`, `/api/v1/me/rentals` | สร้าง/อนุมัติ/คืนรายการเช่า, ประวัติการเช่าของตัวเอง | [rental-service/README.md](rental-service/README.md) |
+
+**Swagger UI (แบบ interactive):** <http://localhost:8000/docs/> — เลือก service จาก dropdown แล้ว
+ลองยิง request จริงผ่าน Kong ได้จากในหน้านั้นเลย (กด "Authorize" ใส่ Bearer token ที่ได้จาก
+`/api/v1/auth/login`) ไฟล์ spec อยู่ที่ [docs/openapi/](docs/openapi/) เขียนขึ้นจากโค้ด/CONTRACT.md
+จริง — ถ้า endpoint เปลี่ยนต้องแก้ไฟล์ spec ตามด้วย (ไม่ได้ generate อัตโนมัติจากโค้ด)
+
+ดู path ทั้งหมดที่ Kong ประกาศไว้และวิธีทดสอบผ่าน gateway ที่
+[deploy/kong/README.md](deploy/kong/README.md) และดูข้อตกลงกลางระหว่าง service (RBAC,
+response format, การตรวจ JWT แบบ decode-only, atomic update) ที่ [CONTRACT.md](CONTRACT.md)
 
 ## Environment Variables
 
-ดูรายละเอียดทั้งหมดที่ `.env.example` (ค่าที่ใช้ร่วมกันทุก service อยู่บนสุด, ค่าเฉพาะ
-service แยกเป็นบล็อกด้านล่าง) และ [CONTRACT.md §2](CONTRACT.md)
+ดูค่าเริ่มต้นทั้งหมดที่ `.env.example` (ค่าที่ใช้ร่วมกันทุก service อยู่บนสุด, ค่าเฉพาะ
+service แยกเป็นบล็อกด้านล่าง) และรายละเอียดใน [CONTRACT.md §2](CONTRACT.md)
 
 | ตัวแปร | ใช้ที่ไหน |
 |---|---|
 | `JWT_SECRET`, `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL` | user-service (ออก token) + `deploy/kong/kong.yml` (ต้องตรงกัน, ดู [deploy/kong/README.md](deploy/kong/README.md)) |
-| `INTERNAL_API_KEY` | `POST /auth/verify` ที่ user-service, เรียกจาก service อื่น |
+| `INTERNAL_API_KEY` | เรียก `POST /auth/verify` ที่ user-service และ endpoint ภายในของ product-service จาก service อื่น |
 | `USER_*` / `PRODUCT_*` / `RENTAL_*` | ตัวแปร DB/port เฉพาะแต่ละ service (namespace กันชนกันใน `.env` เดียว) |
 
-## Git Workflow
+## การทดสอบ
 
-1. `main` = ความจริงเดียว มีโค้ดของทุกคน — ห้าม push ตรง
-2. แตก branch งานย่อยจาก `main`: `feature/<ชื่องาน>` เช่น `feature/product-catalog`
-3. เสร็จแล้วเปิด Pull Request → เพื่อน review อย่างน้อย 1 คน → merge เข้า `main`
-4. ก่อนเริ่มงานใหม่ทุกครั้ง: `git checkout main && git pull`
-5. จะแก้ `CONTRACT.md` / `docker-compose.yml` / `deploy/kong/kong.yml` → แจ้งกลุ่มก่อน
+รันเทสของแต่ละ service แยกกัน (unit/integration test ในตัวเอง ไม่ต้องมี Postgres จริง):
+
+```bash
+cd user-service    && go test ./...
+cd product-service && go test ./...
+cd rental-service  && go test ./...
+```
+
+รัน end-to-end ผ่าน Kong ด้วยสคริปต์ใน `deploy/kong/` ตามหัวข้อ [เริ่มต้นใช้งาน](#เริ่มต้นใช้งาน)
+ด้านบน (ต้องมี stack ทั้งหมดรันอยู่ด้วย `docker compose up -d --build`)
+
+## เอกสารเพิ่มเติม
+
+- [CONTRACT.md](CONTRACT.md) — ข้อตกลงกลางระหว่าง service (พอร์ต, JWT, response format, RBAC, endpoint ภายใน, docker-compose)
+- [docs/user-management-service-design.md](docs/user-management-service-design.md) — เอกสารออกแบบ user-service
+- [docs/superpowers/specs/2026-09-18-kong-api-gateway-design.md](docs/superpowers/specs/2026-09-18-kong-api-gateway-design.md) — เอกสารออกแบบ Kong Gateway

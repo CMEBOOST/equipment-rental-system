@@ -13,7 +13,8 @@ Kong (DB-less/declarative mode) เป็น single entry point หน้าท�
 |---|---|
 | `kong.yml` | Kong declarative config — services, routes, JWT consumer/credential |
 | `smoke-test.sh` | ทดสอบ end-to-end ผ่าน Kong จริง (public/protected route, token หมดอายุ/ปลอม) — คลุม user-service |
-| `rental-smoke-test.sh` | ทดสอบ end-to-end ผ่าน Kong จริง สำหรับ rental-service (role-gating, dependency-failure path) |
+| `rental-smoke-test.sh` | ทดสอบ end-to-end ผ่าน Kong จริง สำหรับ rental-service (role-gating, การเรียก product-service จริง) |
+| `product-rental-e2e-smoke-test.sh` | flow เต็มข้ามทั้ง 3 service จริง: rent → approve → return ผ่าน Kong รวมถึงพิสูจน์ atomic status update |
 
 ## รันและทดสอบ
 
@@ -22,7 +23,7 @@ Kong (DB-less/declarative mode) เป็น single entry point หน้าท�
 ```bash
 cp -n .env.example .env
 docker compose up -d --build
-docker compose ps          # user-service, user-db, rental-service, rental-db, kong ต้อง healthy/running ทั้งหมด
+docker compose ps          # user-service, user-db, product-service, product-db, rental-service, rental-db, docs, kong ต้อง healthy/running ทั้งหมด
 ```
 
 รัน smoke test อัตโนมัติ (ครอบคลุมสุดในคำสั่งเดียว):
@@ -30,6 +31,7 @@ docker compose ps          # user-service, user-db, rental-service, rental-db, k
 ```bash
 ./deploy/kong/smoke-test.sh
 ./deploy/kong/rental-smoke-test.sh
+./deploy/kong/product-rental-e2e-smoke-test.sh
 ```
 
 `smoke-test.sh` ต้องได้ `6 passed, 0 failed` — เช็ค public route ไม่ต้องมี token, protected route ปฏิเสธ
@@ -37,7 +39,11 @@ docker compose ps          # user-service, user-db, rental-service, rental-db, k
 register+login+เข้าถึง protected route จริงด้วย token ที่ได้จริง (200)
 
 `rental-smoke-test.sh` ต้องได้ `8 passed, 0 failed` — เช็ค role-gating ของ rental endpoint ผ่าน Kong
-(admin/staff/customer) และ path ที่ product-service ยังไม่มีโค้ดจริงตอบ `503`/`ErrDependency` ตามที่คาด
+(admin/staff/customer) และการเรียก product-service จริง (ขอเช่าสินค้าที่ไม่มีอยู่จริงต้องได้ `404
+NOT_FOUND` จาก product-service ไม่ใช่ `503` แบบตอนที่ product-service ยังไม่มีโค้ด)
+
+`product-rental-e2e-smoke-test.sh` ทดสอบ flow เต็มจริงข้ามทั้ง 3 service (rent → approve → return)
+รวมถึงยิง `PATCH /products/{id}/status` ตรงเพื่อพิสูจน์ compare-and-swap กัน race condition
 
 ### เช็คด้วยมือทีละจุด
 
@@ -67,16 +73,28 @@ curl -X OPTIONS -i http://localhost:8000/api/v1/me       # preflight -> 204 (COR
 rental-service เรียก product-service ต่อ (`GET /products/{id}`, `PATCH /products/{id}/status`)
 ด้วย `X-Internal-Key` โดยตรงไปที่ container ไม่ผ่าน Kong — ดู CONTRACT.md §8.2 และ §7.3
 
-### product-service (ยังไม่มีโค้ดจริง — Kong ประกาศ path ไว้ล่วงหน้า)
+### product-service (มีโค้ดจริง ทำงานได้)
 
-| Path | Service |
+| Path | ต้องมี JWT? |
 |---|---|
-| `/api/v1/products`, `/api/v1/categories` | product-service (ยิงแล้วได้ 503 จนกว่าจะมี service จริง) |
+| `GET /api/v1/products`, `/api/v1/products/{id}`, `/api/v1/categories`, `POST /api/v1/products`, `PUT /api/v1/products/{id}`, `DELETE /api/v1/products/{id}`, `PATCH /api/v1/products/{id}/status` | ✅ ต้องมี token ที่ Kong ตรวจแล้ว — สิทธิ์ตาม role เช็คในตัว product-service เอง |
 
-**ไม่มี `/health` ของ product-service ตอนนี้โดยตั้งใจ** — path `/health` แบบเดียวกันถ้าประกาศ
-ซ้ำกันหลาย service ทำให้ Kong route ชนกัน (ดู kong.yml คอมเมนต์) เอกพลต้องเพิ่ม health route
-ของตัวเองด้วย path ที่ไม่ซ้ำ เช่น `/product/health` ตอนสร้าง service จริง — วิษณุพงศ์ทำแบบนี้ไปแล้ว
-สำหรับ rental-service ที่ `/rental/health` (ดูตารางด้านบน)
+**ไม่มี public `/health` ของ product-service ผ่าน Kong ตอนนี้ โดยตั้งใจ** — path `/health` แบบเดียวกัน
+ถ้าประกาศซ้ำกันหลาย service ทำให้ Kong route ชนกัน (ดู kong.yml คอมเมนต์ — rental-service แก้ปัญหานี้
+ด้วย path แยก `/rental/health`) ตอนนี้ยังไม่มีใครต้องใช้ health check ของ product-service ผ่าน gateway
+เลยยังไม่ได้เพิ่ม route ให้ — เช็คได้โดยตรงที่ `localhost:8082/health` (ข้าม Kong) ถ้าต้องการเพิ่ม
+public route ในอนาคตให้ตั้ง path ที่ไม่ซ้ำกับใคร เช่น `/product/health`
+
+### docs (Swagger UI — ไม่ใช่ backend service จริง)
+
+| Path | ต้องมี JWT? |
+|---|---|
+| `GET /docs` | ไม่ (public) — เสิร์ฟ Swagger UI จาก container `docs` (image `swaggerapi/swagger-ui`) |
+
+`docs` เป็น container แยกที่ mount spec จาก `docs/openapi/*.yaml` เข้ามาแสดงผล ไม่ใช่ business
+logic service ตั้ง `BASE_URL=/docs` ในตัว container เอง ดังนั้น route นี้ต้องใช้
+**`strip_path: false`** (ต่างจาก service อื่นที่ strip path ออก) ไม่งั้น asset (JS/CSS) ของหน้า
+UI จะหาไฟล์ไม่เจอ
 
 ## ข้อควรรู้ก่อนแก้ไข
 
