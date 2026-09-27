@@ -3,7 +3,9 @@
 ระบบจัดการผู้ใช้งาน (JWT & RBAC) — ผู้รับผิดชอบ: สุรเชษฐ์ สีสา
 
 ดูเอกสารออกแบบที่ [../docs/user-management-service-design.md](../docs/user-management-service-design.md)
-และสัญญาระหว่าง service ที่ [../CONTRACT.md](../CONTRACT.md)
+และสัญญาระหว่าง service ที่ [../CONTRACT.md](../CONTRACT.md) — หรือดู/ทดลองยิง endpoint จริงผ่าน
+Swagger UI ที่ `http://localhost:8000/docs/` (เลือก "user-service" จาก dropdown) หลัง
+`docker compose up` แล้ว
 
 ## รันด้วย Docker (วิธีหลัก)
 

@@ -4,7 +4,8 @@
 
 บริการนี้จัดการคำขอเช่า การสร้างรายการเช่า การอนุมัติ และการคืนสินค้า โดยใช้ PostgreSQL
 เป็นฐานข้อมูลของตัวเอง และเรียก product-service/user-service ผ่าน HTTP ภายใน Docker network
-ตาม [CONTRACT.md](../CONTRACT.md)
+ตาม [CONTRACT.md](../CONTRACT.md) — หรือดู/ทดลองยิง endpoint จริงผ่าน Swagger UI ที่
+`http://localhost:8000/docs/` (เลือก "rental-service" จาก dropdown) หลัง `docker compose up` แล้ว
 
 **JWT:** Kong เป็นคนตรวจลายเซ็นและวันหมดอายุของ token ก่อนส่งต่อมาที่ service นี้แล้ว
 `middleware.RequireAuth()` จึงแค่ decode payload ของ JWT (ไม่ verify signature ซ้ำ) เพื่อดึง

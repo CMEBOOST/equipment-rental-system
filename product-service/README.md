@@ -4,7 +4,9 @@
 
 ดู [CONTRACT.md §8.2](../CONTRACT.md#82-product-service-เจ้าของ-เอกพล) สำหรับ endpoint/RBAC
 ที่ทีมตกลงกัน และ [CONTRACT.md §5.3](../CONTRACT.md#53-product-service--rental-service-ตรวจ-token-อย่างไร)
-สำหรับวิธีตรวจ JWT (decode-only — Kong เป็นคนตรวจ signature ให้)
+สำหรับวิธีตรวจ JWT (decode-only — Kong เป็นคนตรวจ signature ให้) — หรือดู/ทดลองยิง endpoint จริงผ่าน
+Swagger UI ที่ `http://localhost:8000/docs/` (เลือก "product-service" จาก dropdown) หลัง
+`docker compose up` แล้ว
 
 ## Stack
 
